@@ -80,92 +80,96 @@ export function ChatView({
       messages={controller.messages}
       allowedRoots={allowedArtifactRoots}
     >
-      <div className="relative flex h-full min-w-0">
-        <div className="flex min-w-0 flex-1 flex-col pr-1">
-          {controller.isLoadingHistory ? (
-            <ChatLoadingSkeleton />
-          ) : (
-            <MessageTimeline
-              messages={controller.messages}
-              streamingMessageId={controller.streamingMessageId}
-              scrollTargetMessageId={controller.scrollTarget?.messageId ?? null}
-              scrollTargetQuery={controller.scrollTarget?.query ?? null}
-              onScrollTargetHandled={controller.handleScrollTargetHandled}
-            />
-          )}
-
-          <AnimatePresence initial={false}>
-            {showIndicator && !controller.isLoadingHistory ? (
-              <LoadingGoose
-                key="loading-indicator"
-                chatState={
-                  controller.chatState as
-                    | "thinking"
-                    | "streaming"
-                    | "waiting"
-                    | "compacting"
+      <div className="relative flex h-full min-w-0 p-4">
+        <div className="flex min-w-0 flex-1 overflow-hidden rounded-card-chat bg-[var(--surface-card)]">
+          <div className="flex min-w-0 flex-1 flex-col">
+            {controller.isLoadingHistory ? (
+              <ChatLoadingSkeleton />
+            ) : (
+              <MessageTimeline
+                messages={controller.messages}
+                streamingMessageId={controller.streamingMessageId}
+                scrollTargetMessageId={
+                  controller.scrollTarget?.messageId ?? null
                 }
+                scrollTargetQuery={controller.scrollTarget?.query ?? null}
+                onScrollTargetHandled={controller.handleScrollTargetHandled}
               />
-            ) : null}
-          </AnimatePresence>
+            )}
 
-          <ChatInput
-            onSend={controller.handleSend}
-            disabled={
-              controller.projectMetadataPending ||
-              controller.isCompactingContext
-            }
-            queuedMessage={controller.queue.queuedMessage}
-            onDismissQueue={controller.queue.dismiss}
-            initialValue={controller.draftValue}
-            onDraftChange={controller.handleDraftChange}
-            onStop={controller.stopStreaming}
-            isStreaming={
-              controller.chatState === "streaming" ||
-              controller.chatState === "thinking"
-            }
-            personas={controller.personas}
-            selectedPersonaId={controller.selectedPersonaId}
-            onPersonaChange={controller.handlePersonaChange}
-            onCreatePersona={controller.handleCreatePersona}
-            providers={controller.pickerAgents}
-            providersLoading={controller.providersLoading}
-            selectedProvider={controller.selectedProvider}
-            onProviderChange={controller.handleProviderChange}
-            currentModelId={controller.currentModelId}
-            currentModel={controller.currentModelName ?? undefined}
-            availableModels={controller.availableModels}
-            modelsLoading={controller.modelsLoading}
-            modelStatusMessage={controller.modelStatusMessage}
-            onModelChange={controller.handleModelChange}
-            selectedProjectId={controller.selectedProjectId}
-            availableProjects={controller.availableProjects}
-            onProjectChange={controller.handleProjectChange}
-            onCreateProject={(options) =>
-              onCreateProject?.({
-                onCreated: (projectId) => {
-                  controller.handleProjectChange(projectId);
-                  options?.onCreated?.(projectId);
-                },
-              })
-            }
-            contextTokens={controller.tokenState.accumulatedTotal}
-            contextLimit={controller.tokenState.contextLimit}
-            isContextUsageReady={controller.isContextUsageReady}
-            onCompactContext={controller.compactConversation}
-            canCompactContext={controller.canCompactContext}
-            isCompactingContext={controller.isCompactingContext}
-            supportsCompactionControls={controller.supportsCompactionControls}
+            <AnimatePresence initial={false}>
+              {showIndicator && !controller.isLoadingHistory ? (
+                <LoadingGoose
+                  key="loading-indicator"
+                  chatState={
+                    controller.chatState as
+                      | "thinking"
+                      | "streaming"
+                      | "waiting"
+                      | "compacting"
+                  }
+                />
+              ) : null}
+            </AnimatePresence>
+
+            <ChatInput
+              onSend={controller.handleSend}
+              disabled={
+                controller.projectMetadataPending ||
+                controller.isCompactingContext
+              }
+              queuedMessage={controller.queue.queuedMessage}
+              onDismissQueue={controller.queue.dismiss}
+              initialValue={controller.draftValue}
+              onDraftChange={controller.handleDraftChange}
+              onStop={controller.stopStreaming}
+              isStreaming={
+                controller.chatState === "streaming" ||
+                controller.chatState === "thinking"
+              }
+              personas={controller.personas}
+              selectedPersonaId={controller.selectedPersonaId}
+              onPersonaChange={controller.handlePersonaChange}
+              onCreatePersona={controller.handleCreatePersona}
+              providers={controller.pickerAgents}
+              providersLoading={controller.providersLoading}
+              selectedProvider={controller.selectedProvider}
+              onProviderChange={controller.handleProviderChange}
+              currentModelId={controller.currentModelId}
+              currentModel={controller.currentModelName ?? undefined}
+              availableModels={controller.availableModels}
+              modelsLoading={controller.modelsLoading}
+              modelStatusMessage={controller.modelStatusMessage}
+              onModelChange={controller.handleModelChange}
+              selectedProjectId={controller.selectedProjectId}
+              availableProjects={controller.availableProjects}
+              onProjectChange={controller.handleProjectChange}
+              onCreateProject={(options) =>
+                onCreateProject?.({
+                  onCreated: (projectId) => {
+                    controller.handleProjectChange(projectId);
+                    options?.onCreated?.(projectId);
+                  },
+                })
+              }
+              contextTokens={controller.tokenState.accumulatedTotal}
+              contextLimit={controller.tokenState.contextLimit}
+              isContextUsageReady={controller.isContextUsageReady}
+              onCompactContext={controller.compactConversation}
+              canCompactContext={controller.canCompactContext}
+              isCompactingContext={controller.isCompactingContext}
+              supportsCompactionControls={controller.supportsCompactionControls}
+            />
+          </div>
+
+          <ChatContextPanel
+            activeSessionId={sessionId}
+            isOpen={isContextPanelOpen}
+            label={contextPanelLabel}
+            project={controller.project}
+            setOpen={setContextPanelOpen}
           />
         </div>
-
-        <ChatContextPanel
-          activeSessionId={sessionId}
-          isOpen={isContextPanelOpen}
-          label={contextPanelLabel}
-          project={controller.project}
-          setOpen={setContextPanelOpen}
-        />
       </div>
     </ArtifactPolicyProvider>
   );

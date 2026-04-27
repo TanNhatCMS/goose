@@ -108,7 +108,7 @@
   },
   "input": {
     "ariaLabel": "Chat message input",
-    "placeholder": "Message {{agent}}, @ to mention agents"
+    "placeholder": "Type / for skill and @ to mention"
   },
   "loading": {
     "compacting": "Compacting conversation...",

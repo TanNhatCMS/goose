@@ -454,14 +454,36 @@ lines of outer container styling change)
 
 ### 5.3 ChatContextPanel
 
-**Files:** `src/features/chat/ui/ChatContextPanel.tsx`, `ContextPanel.tsx`
+**Files:** `src/features/chat/ui/ChatContextPanel.tsx`, `ContextPanel.tsx`,
+`ChatView.tsx`
 
-Alex flagged the panel styling as WIP. We **do not** re-skin the panel
-itself. We only verify:
-- Its width-eating flex-sibling behavior still works against the new
-  card layout (it should — the flex pattern is already correct)
-- The 200ms width transition still animates smoothly when opening /
-  closing
+Alex flagged the panel content styling as WIP — that's preserved as-is.
+The structural change in this spec is that the panel **lives inside the
+chat card**, opening from the right edge of the card itself rather than
+as an external sibling beside it.
+
+ChatView's outer flex changes from `[card | panel]` to `[card[
+conversation | panel ]]`:
+- The chat card becomes a flex-row at the top level
+- Inside the card, a `flex-1 flex-col` column holds conversation +
+  composer
+- `<ChatContextPanel>` is now a sibling of that column (still inside the
+  card)
+
+The panel's own surface is dropped — no `rounded-xl`, no `border`, no
+`bg-background`. It picks up a `border-l border-[var(--color-gray-200)]`
+divider so it reads as a distinct section of the card without competing
+with the card's white surface. Internal sub-cards (Workspace / Changes
+/ Extensions) keep their existing styling.
+
+The 200ms width transition still works — the mechanism is unchanged
+(width 0 → 364px on the panel's outer wrapper); only its parent moved
+from "outer ChatView flex" to "chat card flex-row." The conversation
+column flex-shrinks the same way it did before.
+
+The toggle button continues to use absolute positioning relative to
+ChatView's outer `relative` div, which keeps it at the top-right corner
+of the chat card across both panel states.
 
 ### 5.4 Home view — static widget placeholders
 

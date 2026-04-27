@@ -108,7 +108,7 @@
   },
   "input": {
     "ariaLabel": "Entrada de mensaje del chat",
-    "placeholder": "Enviar mensaje a {{agent}}, usa @ para mencionar agentes"
+    "placeholder": "Escribe / para skill y @ para mencionar"
   },
   "loading": {
     "compacting": "Compactando conversación...",

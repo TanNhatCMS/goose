@@ -1,4 +1,5 @@
 import { HomeScreen } from "@/features/home/ui/HomeScreen";
+import { HomeView } from "@/features/home/ui/HomeView";
 import { ChatView } from "@/features/chat/ui/ChatView";
 import { SkillsView } from "@/features/skills/ui/SkillsView";
 import { AgentsView } from "@/features/agents/ui/AgentsView";
@@ -75,13 +76,6 @@ export function AppShellContent({
         />
       );
     case "home":
-      return (
-        <HomeScreen
-          sessionId={homeSessionId}
-          onActivateSession={onActivateHomeSession}
-          onCreatePersona={onCreatePersona}
-          onCreateProject={onCreateProject}
-        />
-      );
+      return <HomeView />;
   }
 }

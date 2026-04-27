@@ -59,7 +59,7 @@ export function ChatContextPanel({
               exit={{ opacity: 0 }}
               transition={fadeTransition}
             >
-              <aside className="flex min-w-0 flex-1 overflow-hidden rounded-xl border border-border bg-background">
+              <aside className="flex min-w-0 flex-1 overflow-hidden border-l border-[var(--color-gray-200)]">
                 <ContextPanel
                   sessionId={activeSessionId}
                   projectName={project?.name}

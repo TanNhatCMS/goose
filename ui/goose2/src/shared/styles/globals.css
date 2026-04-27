@@ -301,7 +301,7 @@
   --radius-chrome: 16px;
   --radius-composer: 40px;
   --radius-tile: 20px;
-  --radius-card-chat: 20px; /* tentative; may update in Task 2.2 after Figma extract */
+  --radius-card-chat: 16px; /* from Figma chat frame 227:859 → card node 269:6771 (rounded-[16px]) */
 
   /* font */
   --font-sans-alex:

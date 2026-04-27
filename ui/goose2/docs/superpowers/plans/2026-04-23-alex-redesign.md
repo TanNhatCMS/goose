@@ -1217,31 +1217,78 @@ Expected: baseline 4 errors.
 
 ---
 
-### Task 2.5: Verify ChatContextPanel still flex-resizes
+### Task 2.5: Move ChatContextPanel inside the chat card
 
-**Files:** none (integration check)
+**Scope expansion (2026-04-27):** Visual review at this checkpoint
+showed the panel rendering as a separate floating card beside the chat
+card. Tulsi directed it to live inside the card — opening from the
+right edge of the card itself. Spec §5.3 updated; plan Task 2.5 expands
+from pure visual verification to a small structural edit.
 
-- [ ] **Step 1: Start dev server**
+**Files:**
+- Modify: `ui/goose2/src/features/chat/ui/ChatView.tsx`
+- Modify: `ui/goose2/src/features/chat/ui/ChatContextPanel.tsx`
 
-```bash
-cd ui/goose2 && pnpm tauri dev
+- [ ] **Step 1: Restructure ChatView's chat card to flex-row**
+
+Old:
+
+```tsx
+<div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-card-chat bg-[var(--surface-card)]">
+  {/* MessageTimeline + LoadingGoose + ChatInput */}
+</div>
+
+<ChatContextPanel ... />
 ```
 
-- [ ] **Step 2: Manually test panel open/close**
+New (drop `flex-col` from card; wrap conversation in inner column;
+move `<ChatContextPanel>` inside the card):
 
-Open a chat. Find the button/shortcut to toggle the Context panel (look in `ChatContextPanel.tsx:16-26` for `IconLayoutSidebarRight` — it's the trigger on the right side, or via keyboard shortcut).
+```tsx
+<div className="flex min-w-0 flex-1 overflow-hidden rounded-card-chat bg-[var(--surface-card)]">
+  <div className="flex min-w-0 flex-1 flex-col">
+    {/* MessageTimeline + LoadingGoose + ChatInput */}
+  </div>
+  <ChatContextPanel ... />
+</div>
+```
 
-- Panel closed: chat card extends full width from sidebar to right edge (minus 16px canvas padding).
-- Panel opening: card shrinks over ~200ms to accommodate the panel (364px).
-- Panel closing: card re-expands smoothly.
+- [ ] **Step 2: Strip the panel's own surface**
 
-- [ ] **Step 3: If judder or layout breaks during animation**
+In `ChatContextPanel.tsx`, locate the inner `<aside>`:
 
-Check: the `ChatContextPanel.tsx` width transition uses `transition: width ${reflowDuration}ms ease`. The chat card inside the flex-1 div should ride that width change automatically. If it jumps, check for any `width: fixed` or `max-w-*` on the chat card's inner flex that would block flex-1.
+Old: `<aside className="flex min-w-0 flex-1 overflow-hidden rounded-xl border border-border bg-background">`
 
-- [ ] **Step 4: No code change expected**
+New: `<aside className="flex min-w-0 flex-1 overflow-hidden border-l border-[var(--color-gray-200)]">`
 
-If everything works, move on. If not, note the issue in a follow-up task.
+The panel now sits flush inside the white chat card with a subtle left
+divider. Internal sub-cards (Workspace / Changes / Extensions) keep
+their existing styling.
+
+- [ ] **Step 3: Verify width animation + toggle position**
+
+Start the dev server and toggle the panel:
+- Panel closed: chat card occupies the full available width
+- Panel opening: panel slides in from right edge inside the card over
+  ~200ms; conversation column flex-shrinks to make room
+- Panel closing: conversation re-expands smoothly
+- Toggle button continues to land at the top-right corner of the chat
+  card across both states
+
+If the toggle drifts or the animation judders, the absolute positioning
+in ChatContextPanel.tsx (lines ~75-96) targets ChatView's outer
+`relative` div as its containing block — that didn't change, so this
+should still work.
+
+- [ ] **Step 4: Typecheck**
+
+```bash
+cd ui/goose2 && pnpm typecheck 2>&1 | tail -5
+```
+
+Expected: 0 errors.
+
+- [ ] **Step 5: Do NOT commit**
 
 ---
 
