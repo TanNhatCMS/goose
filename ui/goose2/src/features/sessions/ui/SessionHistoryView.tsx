@@ -3,7 +3,6 @@ import { History, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { getDisplaySessionTitle } from "@/features/chat/lib/sessionTitle";
-import { SearchBar } from "@/shared/ui/SearchBar";
 import { BottomFade } from "@/shared/ui/BottomFade";
 import { Button } from "@/shared/ui/button";
 import { useSetTopBarActions } from "@/app/contexts/TopBarActionsContext";
@@ -211,19 +210,23 @@ export function SessionHistoryView({
     <div className="flex h-full min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="page-transition mx-auto flex w-full max-w-7xl flex-col gap-5 px-6 py-8">
-          <div className="mb-2 max-w-xl">
-            <SearchBar
-              value={search.query}
-              onChange={search.setQuery}
-              placeholder={t("history.searchPlaceholder")}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  void search.search();
-                }
-              }}
-            />
-          </div>
+          <input
+            type="search"
+            autoComplete="off"
+            spellCheck={false}
+            value={search.query}
+            onChange={(event) => search.setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void search.search();
+              }
+            }}
+            placeholder={t("history.searchPlaceholder")}
+            aria-label={t("history.searchPlaceholder")}
+            className="focus-override w-full appearance-none border-0 bg-transparent font-sans text-[40px] font-light leading-none tracking-[-0.02em] text-[var(--text-title-alex)] shadow-none outline-none ring-0 placeholder:text-[var(--text-title-alex)] placeholder:opacity-10 focus:border-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
+            style={{ fontFamily: "var(--font-sans-alex)" }}
+          />
 
           {search.error && (
             <p className="text-xs text-danger">{t("history.searchError")}</p>

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ProviderInventoryEntryDto } from "@aaif/goose-sdk";
 import { ArrowUp, Check, ChevronDown, Mic, Plus, X } from "lucide-react";
@@ -7,6 +7,7 @@ import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useVoiceDictation } from "@/features/chat/hooks/useVoiceDictation";
 import { resolveSessionModelPreference } from "@/features/chat/lib/sessionModelPreference";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
+import { getProviderInventory } from "@/features/providers/api/inventory";
 import { useProviderInventoryStore } from "@/features/providers/stores/providerInventoryStore";
 import {
   inspectAttachmentPaths,
@@ -219,8 +220,10 @@ export function GlobalComposerPill({ onSend }: GlobalComposerPillProps) {
   const providerInventoryEntries = useProviderInventoryStore(
     (state) => state.entries,
   );
+  const mergeInventoryEntries = useProviderInventoryStore(
+    (state) => state.mergeEntries,
+  );
   const [text, setText] = useState("");
-  const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
@@ -296,8 +299,32 @@ export function GlobalComposerPill({ onSend }: GlobalComposerPillProps) {
     isSendLocked: false,
   });
 
+  useEffect(() => {
+    if (!modelPickerOpen) {
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const entries = await getProviderInventory();
+        if (!cancelled) {
+          mergeInventoryEntries(entries);
+        }
+      } catch (error) {
+        console.error(
+          "Failed to sync provider inventory from global composer:",
+          error,
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [modelPickerOpen, mergeInventoryEntries]);
+
   const expanded =
-    hovered ||
     focused ||
     modelPickerOpen ||
     projectPickerOpen ||
@@ -374,8 +401,6 @@ export function GlobalComposerPill({ onSend }: GlobalComposerPillProps) {
     <div
       role="region"
       aria-label="Quick compose"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       onFocus={() => setFocused(true)}
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
@@ -425,7 +450,7 @@ export function GlobalComposerPill({ onSend }: GlobalComposerPillProps) {
             }
           }}
           placeholder={effectivePlaceholder}
-          className="h-10 flex-1 appearance-none border-0 bg-transparent text-[16px] leading-[20px] text-black/70 outline-none placeholder:text-black/70 focus:outline-none focus:ring-0"
+          className="focus-override h-10 flex-1 appearance-none border-0 bg-transparent text-[16px] leading-[20px] text-black/70 outline-none placeholder:text-black/70 focus:outline-none focus:ring-0"
         />
 
         <div
@@ -490,8 +515,13 @@ export function GlobalComposerPill({ onSend }: GlobalComposerPillProps) {
                 <ChevronDown className="size-3 shrink-0 text-black/60" />
               </button>
             </PopoverTrigger>
-            <PopoverContent align="start" className="w-[320px] p-2">
+            <PopoverContent side="top" align="start" className="w-[320px] p-2">
               <div className="max-h-80 space-y-2 overflow-y-auto">
+                {modelGroups.length === 0 ? (
+                  <p className="px-2 py-3 text-center text-[14px] text-black/55">
+                    {t("toolbar.noModelsAvailable")}
+                  </p>
+                ) : null}
                 {modelGroups.map((group) => (
                   <div key={group.providerId} className="space-y-1">
                     <div className="flex items-center gap-2 px-2 pt-1 text-[12px] font-medium text-black/50">
@@ -548,7 +578,7 @@ export function GlobalComposerPill({ onSend }: GlobalComposerPillProps) {
                 <ChevronDown className="size-3 shrink-0 text-black/60" />
               </button>
             </PopoverTrigger>
-            <PopoverContent align="start" className="w-[260px] p-2">
+            <PopoverContent side="top" align="start" className="w-[260px] p-2">
               <div className="space-y-0.5">
                 <button
                   type="button"
