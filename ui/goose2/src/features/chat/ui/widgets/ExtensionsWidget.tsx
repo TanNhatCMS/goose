@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconApps } from "@tabler/icons-react";
 import { listSessionExtensionStatus } from "@/features/extensions/api/extensions";
@@ -60,14 +60,6 @@ export function ExtensionsWidget({ sessionId }: ExtensionsWidgetProps) {
     (s) => s.messagesBySession[sessionId] ?? EMPTY_MESSAGES,
   );
 
-  const fetchStatuses = useCallback(() => {
-    setIsLoading(true);
-    listSessionExtensionStatus(sessionId)
-      .then((all) => setExtensions(all))
-      .catch(() => setExtensions([]))
-      .finally(() => setIsLoading(false));
-  }, [sessionId]);
-
   const toolRequestSignature = useMemo(() => {
     return messages
       .flatMap((message) =>
@@ -82,13 +74,38 @@ export function ExtensionsWidget({ sessionId }: ExtensionsWidgetProps) {
   }, [messages]);
 
   useEffect(() => {
+    let isCurrent = true;
+
     if (!toolRequestSignature) {
       setExtensions([]);
       setIsLoading(false);
-      return;
+      return () => {
+        isCurrent = false;
+      };
     }
-    fetchStatuses();
-  }, [fetchStatuses, toolRequestSignature]);
+
+    setIsLoading(true);
+    listSessionExtensionStatus(sessionId)
+      .then((all) => {
+        if (isCurrent) {
+          setExtensions(all);
+        }
+      })
+      .catch(() => {
+        if (isCurrent) {
+          setExtensions([]);
+        }
+      })
+      .finally(() => {
+        if (isCurrent) {
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [sessionId, toolRequestSignature]);
 
   const used = useMemo(
     () => getUsedSessionExtensions(extensions, messages),
