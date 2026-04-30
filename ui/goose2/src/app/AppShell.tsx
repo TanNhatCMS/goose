@@ -38,6 +38,7 @@ export type AppView =
   | "home"
   | "chat"
   | "skills"
+  | "extensions"
   | "agents"
   | "projects"
   | "session-history";
@@ -51,7 +52,6 @@ const SETTINGS_SECTIONS = new Set<SectionId>([
   "appearance",
   "providers",
   "compaction",
-  "extensions",
   "voice",
   "general",
   "projects",
@@ -390,6 +390,13 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     const handleOpenSettingsEvent = (event: Event) => {
       const section = (event as CustomEvent<{ section?: string }>).detail
         ?.section;
+      if (section === "extensions") {
+        setSettingsOpen(false);
+        useChatSessionStore.getState().setActiveSession(null);
+        setActiveView("extensions");
+        return;
+      }
+
       if (section && SETTINGS_SECTIONS.has(section as SectionId)) {
         openSettings(section as SectionId);
         return;

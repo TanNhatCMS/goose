@@ -46,6 +46,10 @@ vi.mock("@/shared/api/git", () => ({
   initRepo: vi.fn(),
 }));
 
+vi.mock("@/features/extensions/api/extensions", () => ({
+  listSessionExtensionStatus: () => Promise.resolve([]),
+}));
+
 vi.mock("../../hooks/ArtifactPolicyContext", () => ({
   useArtifactPolicyContext: () => ({
     getAllSessionArtifacts: () => [],

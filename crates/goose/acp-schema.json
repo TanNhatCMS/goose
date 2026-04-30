@@ -249,6 +249,33 @@
       "x-side": "agent",
       "x-method": "_goose/session/extensions"
     },
+    "GetSessionExtensionStatusRequest": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "x-side": "agent",
+      "x-method": "_goose/session/extensions/status"
+    },
+    "GetSessionExtensionStatusResponse": {
+      "type": "object",
+      "properties": {
+        "extensions": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [
+        "extensions"
+      ],
+      "x-side": "agent",
+      "x-method": "_goose/session/extensions/status"
+    },
     "ListProvidersRequest": {
       "type": "object",
       "properties": {
@@ -1676,6 +1703,15 @@
                 {
                   "allOf": [
                     {
+                      "$ref": "#/$defs/GetSessionExtensionStatusRequest"
+                    }
+                  ],
+                  "description": "Params for _goose/session/extensions/status",
+                  "title": "GetSessionExtensionStatusRequest"
+                },
+                {
+                  "allOf": [
+                    {
                       "$ref": "#/$defs/ListProvidersRequest"
                     }
                   ],
@@ -2030,6 +2066,14 @@
                         }
                       ],
                       "title": "GetSessionExtensionsResponse"
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/GetSessionExtensionStatusResponse"
+                        }
+                      ],
+                      "title": "GetSessionExtensionStatusResponse"
                     },
                     {
                       "allOf": [

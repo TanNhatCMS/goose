@@ -52,6 +52,31 @@ const pendingUsageUpdates = new Map<
   { accumulatedTotal: number; contextLimit: number }
 >();
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function getToolCallIdentity(update: SessionUpdate): {
+  toolName?: string;
+  extensionName?: string;
+} {
+  if (!isRecord(update._meta)) {
+    return {};
+  }
+  const goose = update._meta.goose;
+  if (!isRecord(goose) || !isRecord(goose.toolCall)) {
+    return {};
+  }
+  return {
+    ...(typeof goose.toolCall.toolName === "string"
+      ? { toolName: goose.toolCall.toolName }
+      : {}),
+    ...(typeof goose.toolCall.extensionName === "string"
+      ? { extensionName: goose.toolCall.extensionName }
+      : {}),
+  };
+}
+
 subscribeToSessionRegistration((localSessionId, gooseSessionId) => {
   const pendingUsage = pendingUsageUpdates.get(gooseSessionId);
   if (!pendingUsage) {
@@ -173,10 +198,12 @@ function handleReplay(
 
     case "tool_call": {
       const msg = ensureReplayAssistantMessage(sessionId);
+      const identity = getToolCallIdentity(update);
       msg.content.push({
         type: "toolRequest",
         id: update.toolCallId,
         name: update.title,
+        ...identity,
         arguments: {},
         status: "executing",
         startedAt: Date.now(),
@@ -275,11 +302,13 @@ function handleLive(
 
     case "tool_call": {
       const messageId = ensureLiveAssistantMessage(sessionId, gooseSessionId);
+      const identity = getToolCallIdentity(update);
 
       const toolRequest: ToolRequestContent = {
         type: "toolRequest",
         id: update.toolCallId,
         name: update.title,
+        ...identity,
         arguments: {},
         status: "executing",
         startedAt: Date.now(),

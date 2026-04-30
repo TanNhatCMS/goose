@@ -21,6 +21,15 @@ export interface BuiltinExtensionConfig {
   available_tools?: string[];
 }
 
+export interface PlatformExtensionConfig {
+  type: "platform";
+  name: string;
+  description: string;
+  display_name?: string;
+  bundled?: boolean;
+  available_tools?: string[];
+}
+
 export interface StreamableHttpExtensionConfig {
   type: "streamable_http";
   name: string;
@@ -45,6 +54,7 @@ export interface SseExtensionConfig {
 export type ExtensionConfig =
   | StdioExtensionConfig
   | BuiltinExtensionConfig
+  | PlatformExtensionConfig
   | StreamableHttpExtensionConfig
   | SseExtensionConfig;
 
@@ -53,8 +63,17 @@ export type ExtensionEntry = ExtensionConfig & {
   enabled: boolean;
 };
 
-export function getDisplayName(ext: ExtensionEntry): string {
-  if (ext.type === "builtin" && ext.display_name) {
+export type ExtensionConnectionStatus = "connected" | "failed";
+
+export type SessionExtensionStatus = ExtensionConfig & {
+  config_key: string;
+  status: ExtensionConnectionStatus;
+  tools: string[];
+  error?: string;
+};
+
+export function getDisplayName(ext: ExtensionConfig): string {
+  if ((ext.type === "builtin" || ext.type === "platform") && ext.display_name) {
     return ext.display_name;
   }
   return ext.name;

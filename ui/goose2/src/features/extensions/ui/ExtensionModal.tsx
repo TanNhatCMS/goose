@@ -25,11 +25,7 @@ type ExtensionType = "stdio" | "streamable_http";
 
 interface ExtensionModalProps {
   extension?: ExtensionEntry;
-  onSubmit: (
-    name: string,
-    config: ExtensionConfig,
-    enabled: boolean,
-  ) => Promise<void>;
+  onSubmit: (name: string, config: ExtensionConfig) => Promise<void>;
   onDelete?: (configKey: string) => Promise<void>;
   onClose: () => void;
 }
@@ -148,7 +144,7 @@ export function ExtensionModal({
         };
       }
 
-      await onSubmit(trimmedName, config, extension?.enabled ?? true);
+      await onSubmit(trimmedName, config);
     } finally {
       setIsSaving(false);
     }

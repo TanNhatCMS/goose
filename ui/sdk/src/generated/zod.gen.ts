@@ -113,6 +113,14 @@ export const zGetSessionExtensionsResponse = z.object({
     extensions: z.array(z.unknown())
 });
 
+export const zGetSessionExtensionStatusRequest = z.object({
+    sessionId: z.string()
+});
+
+export const zGetSessionExtensionStatusResponse = z.object({
+    extensions: z.array(z.unknown())
+});
+
 /**
  * List providers with setup metadata and the current model inventory snapshot.
  */
@@ -689,6 +697,7 @@ export const zExtRequest = z.object({
             zRemoveConfigExtensionRequest,
             zToggleConfigExtensionRequest,
             zGetSessionExtensionsRequest,
+            zGetSessionExtensionStatusRequest,
             zListProvidersRequest,
             zRefreshProviderInventoryRequest,
             zProviderConfigReadRequest,
@@ -739,6 +748,7 @@ export const zExtResponse = z.union([
                 zReadResourceResponse,
                 zGetExtensionsResponse,
                 zGetSessionExtensionsResponse,
+                zGetSessionExtensionStatusResponse,
                 zListProvidersResponse,
                 zRefreshProviderInventoryResponse,
                 zProviderConfigReadResponse,

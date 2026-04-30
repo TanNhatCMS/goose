@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { IconPlus, IconSearch } from "@tabler/icons-react";
+import { IconChevronDown, IconPlus } from "@tabler/icons-react";
 import { Button } from "@/shared/ui/button";
-import { Input } from "@/shared/ui/input";
+import { SearchBar } from "@/shared/ui/SearchBar";
+import { FilterRow, PageHeader } from "@/shared/ui/page-shell";
 import {
   listExtensions,
   addExtension,
   removeExtension,
-  toggleExtension,
   nameToKey,
 } from "../api/extensions";
 import {
@@ -19,6 +19,44 @@ import {
 import { ExtensionItem } from "./ExtensionItem";
 import { ExtensionModal } from "./ExtensionModal";
 
+type ExtensionCategory = "appsServices" | "gooseCapabilities";
+
+type ExtensionFilter = "all" | ExtensionCategory;
+
+const GOOSE_CAPABILITY_TYPES = new Set(["builtin", "platform"]);
+
+function classifyExtension(extension: ExtensionEntry): ExtensionCategory {
+  if (GOOSE_CAPABILITY_TYPES.has(extension.type)) {
+    return "gooseCapabilities";
+  }
+  return "appsServices";
+}
+
+function compareExtensionsByName(a: ExtensionEntry, b: ExtensionEntry) {
+  return getDisplayName(a).localeCompare(getDisplayName(b));
+}
+
+function FilterButton({
+  active,
+  children,
+  onClick,
+}: {
+  active: boolean;
+  children: React.ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      size="xs"
+      variant={active ? "default" : "outline-flat"}
+      onClick={onClick}
+    >
+      {children}
+    </Button>
+  );
+}
+
 export function ExtensionsSettings() {
   const { t } = useTranslation("settings");
   const [extensions, setExtensions] = useState<ExtensionEntry[]>([]);
@@ -27,8 +65,11 @@ export function ExtensionsSettings() {
   const [editingExtension, setEditingExtension] =
     useState<ExtensionEntry | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [activeFilter, setActiveFilter] = useState<ExtensionFilter>("all");
+  const [showGooseCapabilities, setShowGooseCapabilities] = useState(false);
 
   const fetchExtensions = useCallback(async () => {
+    setIsLoading(true);
     try {
       const result = await listExtensions();
       setExtensions(result);
@@ -47,56 +88,73 @@ export function ExtensionsSettings() {
     (ext: ExtensionEntry) => {
       if (!searchTerm) return true;
       const q = searchTerm.toLowerCase();
+      const category = classifyExtension(ext);
       return (
         getDisplayName(ext).toLowerCase().includes(q) ||
         ext.name.toLowerCase().includes(q) ||
         (ext.description ?? "").toLowerCase().includes(q) ||
-        ext.type.toLowerCase().includes(q)
+        t(`extensions.categories.${category}`).toLowerCase().includes(q)
       );
     },
-    [searchTerm],
+    [searchTerm, t],
   );
 
-  const sorted = useMemo(() => {
-    return [...extensions].sort((a, b) => {
-      if (a.type === "builtin" && b.type !== "builtin") return -1;
-      if (a.type !== "builtin" && b.type === "builtin") return 1;
-      const aBundled = a.bundled === true;
-      const bBundled = b.bundled === true;
-      if (aBundled && !bBundled) return -1;
-      if (!aBundled && bBundled) return 1;
-      return a.name.localeCompare(b.name);
-    });
-  }, [extensions]);
-
-  const enabled = useMemo(
-    () => sorted.filter((e) => e.enabled && matchesSearch(e)),
-    [sorted, matchesSearch],
-  );
-  const available = useMemo(
-    () => sorted.filter((e) => !e.enabled && matchesSearch(e)),
-    [sorted, matchesSearch],
+  const filteredExtensions = useMemo(
+    () =>
+      extensions
+        .filter((extension) => {
+          const category = classifyExtension(extension);
+          return (
+            matchesSearch(extension) &&
+            (activeFilter === "all" || category === activeFilter)
+          );
+        })
+        .sort(compareExtensionsByName),
+    [activeFilter, extensions, matchesSearch],
   );
 
-  const handleToggle = async (ext: ExtensionEntry) => {
-    try {
-      await toggleExtension(ext.config_key, !ext.enabled);
-      await fetchExtensions();
-    } catch {
-      toast.error(t("extensions.errors.toggleFailed"));
+  const primaryExtensions = useMemo(
+    () =>
+      filteredExtensions.filter(
+        (ext) => classifyExtension(ext) !== "gooseCapabilities",
+      ),
+    [filteredExtensions],
+  );
+
+  const gooseCapabilities = useMemo(
+    () =>
+      filteredExtensions.filter(
+        (ext) => classifyExtension(ext) === "gooseCapabilities",
+      ),
+    [filteredExtensions],
+  );
+
+  const visibleExtensions =
+    activeFilter === "gooseCapabilities"
+      ? gooseCapabilities
+      : [...primaryExtensions, ...gooseCapabilities];
+  const shouldShowGooseCapabilities =
+    activeFilter === "gooseCapabilities" || showGooseCapabilities;
+  const showGooseCapabilitiesToggle =
+    activeFilter !== "gooseCapabilities" && gooseCapabilities.length > 0;
+
+  const categoryCounts = useMemo(() => {
+    const counts: Record<ExtensionCategory, number> = {
+      appsServices: 0,
+      gooseCapabilities: 0,
+    };
+    for (const extension of extensions) {
+      counts[classifyExtension(extension)] += 1;
     }
-  };
+    return counts;
+  }, [extensions]);
 
   const handleConfigure = (ext: ExtensionEntry) => {
     setEditingExtension(ext);
     setModalMode("edit");
   };
 
-  const handleSubmit = async (
-    name: string,
-    config: ExtensionConfig,
-    extensionEnabled: boolean,
-  ) => {
+  const handleSubmit = async (name: string, config: ExtensionConfig) => {
     try {
       const newKey = nameToKey(name);
       const isEdit = !!editingExtension;
@@ -111,7 +169,7 @@ export function ExtensionsSettings() {
         return;
       }
 
-      await addExtension(name, config, extensionEnabled);
+      await addExtension(name, config);
       if (keyChanged) {
         await removeExtension(editingExtension.config_key);
       }
@@ -139,91 +197,135 @@ export function ExtensionsSettings() {
     setEditingExtension(null);
   };
 
-  return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="font-display text-lg font-semibold tracking-tight">
-          {t("extensions.title")}
-        </h3>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t("extensions.description")}
-        </p>
-      </div>
+  const renderSection = (
+    title: string,
+    sectionExtensions: ExtensionEntry[],
+    showTitle = true,
+  ) => {
+    if (sectionExtensions.length === 0) return null;
+    return (
+      <section className="space-y-3">
+        {showTitle ? (
+          <h4 className="text-sm font-normal text-foreground">{title}</h4>
+        ) : null}
+        <div className="grid gap-x-12 sm:grid-cols-2">
+          {sectionExtensions.map((ext) => (
+            <ExtensionItem
+              key={ext.config_key}
+              extension={ext}
+              onConfigure={handleConfigure}
+            />
+          ))}
+        </div>
+      </section>
+    );
+  };
 
-      <div className="relative">
-        <IconSearch className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
+  return (
+    <div className="space-y-8">
+      <PageHeader
+        title={t("extensions.title")}
+        description={t("extensions.description")}
+        titleClassName="font-normal text-foreground"
+        actions={
+          <Button
+            type="button"
+            variant="outline-flat"
+            size="xs"
+            onClick={() => {
+              setEditingExtension(null);
+              setModalMode("add");
+            }}
+          >
+            <IconPlus className="size-3.5" />
+            {t("extensions.addExtension")}
+          </Button>
+        }
+      />
+
+      <div className="space-y-3">
+        <SearchBar
           value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
+          onChange={setSearchTerm}
           placeholder={t("extensions.search")}
-          className="pl-9"
         />
+        <FilterRow>
+          <FilterButton
+            active={activeFilter === "all"}
+            onClick={() => setActiveFilter("all")}
+          >
+            {t("extensions.filters.all")}
+          </FilterButton>
+          {(["appsServices", "gooseCapabilities"] as ExtensionCategory[]).map(
+            (category) =>
+              categoryCounts[category] > 0 ? (
+                <FilterButton
+                  key={category}
+                  active={activeFilter === category}
+                  onClick={() => setActiveFilter(category)}
+                >
+                  {t(`extensions.categories.${category}`)}
+                </FilterButton>
+              ) : null,
+          )}
+        </FilterRow>
       </div>
 
       {isLoading ? (
-        <div className="divide-y divide-border">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="h-14 animate-pulse bg-muted/30" />
+        <div className="grid gap-x-12 sm:grid-cols-2">
+          {[1, 2, 3, 4, 5, 6].map((i) => (
+            <div
+              key={i}
+              className="h-20 animate-pulse border-b border-border-soft-divider py-4"
+            >
+              <div className="h-4 w-2/5 rounded bg-muted/50" />
+              <div className="mt-2 h-3 w-3/5 rounded bg-muted/40" />
+            </div>
           ))}
         </div>
       ) : extensions.length === 0 ? (
         <p className="text-sm text-muted-foreground">{t("extensions.empty")}</p>
-      ) : enabled.length === 0 && available.length === 0 && searchTerm ? (
+      ) : visibleExtensions.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           {t("extensions.noResults")}
         </p>
       ) : (
-        <div className="space-y-4">
-          {enabled.length > 0 && (
-            <div>
-              <h4 className="text-sm font-medium">
-                {t("extensions.enabledCount", { count: enabled.length })}
-              </h4>
-              <div className="divide-y divide-border">
-                {enabled.map((ext) => (
-                  <ExtensionItem
-                    key={ext.config_key}
-                    extension={ext}
-                    onToggle={handleToggle}
-                    onConfigure={handleConfigure}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
+        <div className="space-y-8">
+          {activeFilter !== "gooseCapabilities"
+            ? renderSection(
+                t("extensions.sections.extensions"),
+                primaryExtensions,
+                false,
+              )
+            : null}
 
-          {available.length > 0 && (
-            <div>
-              <h4 className="text-sm font-medium text-muted-foreground">
-                {t("extensions.availableCount", { count: available.length })}
-              </h4>
-              <div className="divide-y divide-border">
-                {available.map((ext) => (
-                  <ExtensionItem
-                    key={ext.config_key}
-                    extension={ext}
-                    onToggle={handleToggle}
-                    onConfigure={handleConfigure}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
+          {shouldShowGooseCapabilities
+            ? renderSection(
+                t("extensions.sections.gooseCapabilities"),
+                gooseCapabilities,
+              )
+            : null}
+
+          {showGooseCapabilitiesToggle ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowGooseCapabilities((current) => !current)}
+              className="w-full text-muted-foreground"
+            >
+              {showGooseCapabilities
+                ? t("extensions.hideGooseCapabilities")
+                : t("extensions.showGooseCapabilities", {
+                    count: gooseCapabilities.length,
+                  })}
+              {!showGooseCapabilities ? (
+                <IconChevronDown className="size-3" />
+              ) : null}
+            </Button>
+          ) : null}
         </div>
       )}
-
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={() => {
-          setEditingExtension(null);
-          setModalMode("add");
-        }}
-      >
-        <IconPlus className="size-4" />
-        {t("extensions.addExtension")}
-      </Button>
 
       {modalMode === "add" && (
         <ExtensionModal onSubmit={handleSubmit} onClose={handleModalClose} />
