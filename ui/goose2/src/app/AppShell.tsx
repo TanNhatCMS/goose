@@ -145,8 +145,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const { activeSessionId } = sessionStore;
 
   useEffect(() => {
-    if (activeView === "chat" && activeSessionId) {
-      useChatStore.getState().markSessionRead(activeSessionId);
+    const viewedSessionId = activeView === "chat" ? activeSessionId : null;
+    const liveChatStore = useChatStore.getState();
+    liveChatStore.setViewedSession(viewedSessionId);
+    if (viewedSessionId) {
+      liveChatStore.markSessionRead(viewedSessionId);
     }
   }, [activeSessionId, activeView]);
 
