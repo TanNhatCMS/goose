@@ -10,9 +10,15 @@ on:
   workflow_dispatch:
     inputs:
       release-tag:
-        description: 'Release tag to fetch binaries from (e.g. v1.0.0)'
-        required: true
+        description: 'Release tag to fetch binaries from (e.g. v1.0.0). Ignored when canary=true.'
+        required: false
+        default: 'canary'
         type: string
+      canary:
+        description: 'Publish a canary off the branch selected above (npm dist-tag "canary", auto-bumped version)'
+        required: false
+        default: false
+        type: boolean
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -41,6 +47,22 @@ jobs:
         uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4
         with:
           version: 10.30.3
+
+      - name: Bump package versions for canary
+        if: inputs.canary
+        run: |
+          set -euo pipefail
+          base=$(npm view @aaif/goose dist-tags.latest)
+          # pick the next free N for ${base}-canary.N
+          n=$(npm view @aaif/goose versions --json \
+            | jq -r --arg b "${base}-canary." '
+                map(select(startswith($b)) | ltrimstr($b) | tonumber) | (max // -1) + 1')
+          version="${base}-canary.${n}"
+          echo "Canary version: ${version}"
+          for pkg in ui/sdk ui/text ui/goose-binary/*/; do
+            jq --arg v "$version" '.version = $v' "$pkg/package.json" > "$pkg/package.json.tmp"
+            mv "$pkg/package.json.tmp" "$pkg/package.json"
+          done
 
       - name: Download goose binaries from release
         env:
@@ -160,6 +182,8 @@ jobs:
           version: 10.30.3
 
       - name: Publish to npm
+        env:
+          NPM_TAG: ${{ inputs.canary && 'canary' || 'latest' }}
         run: |
           cd ui
           # Publish each package individually so one failure doesn't abort the rest.
@@ -169,8 +193,8 @@ jobs:
             if [ -f "$pkg/package.json" ]; then
               name=$(jq -r '.name' "$pkg/package.json")
               version=$(jq -r '.version' "$pkg/package.json")
-              echo "Publishing $name@$version..."
-              if (cd "$pkg" && pnpm publish --access public --no-git-checks --provenance); then
+              echo "Publishing $name@$version (tag: $NPM_TAG)..."
+              if (cd "$pkg" && pnpm publish --access public --no-git-checks --provenance --tag "$NPM_TAG"); then
                 echo "  ✅ $name@$version published"
               else
                 # Check if it failed because the version already exists
