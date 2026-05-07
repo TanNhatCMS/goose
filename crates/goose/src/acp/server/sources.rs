@@ -22,10 +22,12 @@ impl GooseAcpAgent {
             &req.name,
             &req.description,
             &req.content,
-            req.metadata,
-            req.global,
-            project_dir.as_deref(),
-            req.properties,
+            crate::sources::CreateSourceOptions {
+                metadata: req.metadata,
+                global: req.global,
+                project_dir: project_dir.as_deref(),
+                properties: req.properties,
+            },
         )?;
         Ok(CreateSourceResponse { source })
     }
@@ -53,9 +55,11 @@ impl GooseAcpAgent {
             &req.name,
             &req.description,
             &req.content,
-            req.metadata,
-            req.properties,
-            &self.additional_source_roots,
+            crate::sources::UpdateSourceOptions {
+                metadata: req.metadata,
+                properties: req.properties,
+                additional_roots: &self.additional_source_roots,
+            },
         )?;
         Ok(UpdateSourceResponse { source })
     }

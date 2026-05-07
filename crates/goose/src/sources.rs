@@ -300,8 +300,7 @@ fn builtin_skill_entry(mut source: SourceEntry) -> SourceEntry {
     source
 }
 
-fn source_entry(
-    source_type: SourceType,
+fn agent_source_entry_from_parts(
     name: &str,
     description: &str,
     content: &str,
@@ -311,7 +310,7 @@ fn source_entry(
     writable: bool,
 ) -> SourceEntry {
     SourceEntry {
-        source_type,
+        source_type: SourceType::Agent,
         name: name.to_string(),
         description: description.to_string(),
         content: content.to_string(),
@@ -565,8 +564,7 @@ fn agent_source_entry(path: &Path, global: bool, writable: bool) -> Result<Sourc
     let raw = fs::read_to_string(path)
         .map_err(|e| Error::internal_error().data(format!("Failed to read agent file: {e}")))?;
     let (frontmatter, content) = parse_agent_frontmatter(&raw)?;
-    Ok(source_entry(
-        SourceType::Agent,
+    Ok(agent_source_entry_from_parts(
         &frontmatter.name,
         &frontmatter.description,
         &content,
@@ -783,25 +781,36 @@ fn update_agent_source(
 
 // --- Public CRUD ---
 
+pub struct CreateSourceOptions<'a> {
+    pub metadata: Option<Value>,
+    pub global: bool,
+    pub project_dir: Option<&'a str>,
+    pub properties: HashMap<String, serde_json::Value>,
+}
+
 pub fn create_source(
     source_type: SourceType,
     name: &str,
     description: &str,
     content: &str,
-    metadata: Option<Value>,
-    global: bool,
-    project_dir: Option<&str>,
-    properties: HashMap<String, serde_json::Value>,
+    options: CreateSourceOptions<'_>,
 ) -> Result<SourceEntry, Error> {
     require_mutable_type(source_type)?;
     if source_type == SourceType::Agent {
-        return create_agent_source(name, description, content, metadata, global, project_dir);
+        return create_agent_source(
+            name,
+            description,
+            content,
+            options.metadata,
+            options.global,
+            options.project_dir,
+        );
     }
 
     match source_type {
         SourceType::Skill => {
             validate_skill_name(name)?;
-            let dir = skill_base_dir(global, project_dir)?.join(name);
+            let dir = skill_base_dir(options.global, options.project_dir)?.join(name);
 
             if dir.exists() {
                 return Err(Error::invalid_params()
@@ -812,7 +821,7 @@ pub fn create_source(
                 Error::internal_error().data(format!("Failed to create source directory: {e}"))
             })?;
             let file_path = dir.join("SKILL.md");
-            let md = build_skill_md(name, description, content, &properties);
+            let md = build_skill_md(name, description, content, &options.properties);
             fs::write(&file_path, md).map_err(|e| {
                 Error::internal_error().data(format!("Failed to write SKILL.md: {e}"))
             })?;
@@ -822,8 +831,8 @@ pub fn create_source(
                 description,
                 content,
                 &dir,
-                global,
-                properties,
+                options.global,
+                options.properties,
             ))
         }
         SourceType::Project => {
@@ -839,11 +848,12 @@ pub fn create_source(
             }
             // The display name comes from `properties.title`; if absent, the
             // file's frontmatter `name:` is the slug itself.
-            let display_name = properties
+            let display_name = options
+                .properties
                 .get("title")
                 .and_then(|v| v.as_str())
                 .unwrap_or(name);
-            let md = build_project_md(display_name, description, content, &properties);
+            let md = build_project_md(display_name, description, content, &options.properties);
             fs::write(&file, md).map_err(|e| {
                 Error::internal_error().data(format!("Failed to write project file: {e}"))
             })?;
@@ -869,10 +879,18 @@ pub fn update_source(
         name,
         description,
         content,
-        metadata,
-        properties,
-        &[],
+        UpdateSourceOptions {
+            metadata,
+            properties,
+            additional_roots: &[],
+        },
     )
+}
+
+pub struct UpdateSourceOptions<'a> {
+    pub metadata: Option<Value>,
+    pub properties: Option<HashMap<String, serde_json::Value>>,
+    pub additional_roots: &'a [SourceRoot],
 }
 
 pub fn update_source_with_roots(
@@ -881,13 +899,18 @@ pub fn update_source_with_roots(
     name: &str,
     description: &str,
     content: &str,
-    metadata: Option<Value>,
-    properties: Option<HashMap<String, serde_json::Value>>,
-    additional_roots: &[SourceRoot],
+    options: UpdateSourceOptions<'_>,
 ) -> Result<SourceEntry, Error> {
     require_mutable_type(source_type)?;
     if source_type == SourceType::Agent {
-        return update_agent_source(path, name, description, content, metadata, additional_roots);
+        return update_agent_source(
+            path,
+            name,
+            description,
+            content,
+            options.metadata,
+            options.additional_roots,
+        );
     }
 
     match source_type {
@@ -902,7 +925,7 @@ pub fn update_source_with_roots(
                     Error::internal_error().data("Failed to resolve source directory name")
                 })?;
 
-            let resolved_properties = match properties {
+            let resolved_properties = match options.properties {
                 Some(p) => p,
                 None => read_existing_skill_properties(&dir),
             };
@@ -957,7 +980,7 @@ pub fn update_source_with_roots(
                 )));
             }
 
-            let resolved_properties = match properties {
+            let resolved_properties = match options.properties {
                 Some(p) => p,
                 None => read_existing_project_properties(&file),
             };
@@ -1309,10 +1332,12 @@ pub fn import_sources(
                 &final_name,
                 &description,
                 &content,
-                None,
-                global,
-                project_dir,
-                properties,
+                CreateSourceOptions {
+                    metadata: None,
+                    global,
+                    project_dir,
+                    properties,
+                },
             )
             .map(|entry| vec![entry])
         }
@@ -1332,10 +1357,12 @@ pub fn import_sources(
                 &final_name,
                 &description,
                 &content,
-                None,
-                true, // projects are always global
-                None,
-                properties,
+                CreateSourceOptions {
+                    metadata: None,
+                    global: true,
+                    project_dir: None,
+                    properties,
+                },
             )
             .map(|entry| vec![entry])
         }
@@ -1377,6 +1404,7 @@ mod tests {
         let sources = list_sources_with_roots(
             Some(SourceType::Agent),
             None,
+            false,
             &[SourceRoot::read_only(root.clone())],
         )
         .unwrap();
@@ -1384,23 +1412,26 @@ mod tests {
         let solo = sources.iter().find(|source| source.name == "Solo").unwrap();
         assert!(!solo.writable);
         assert!(solo.global);
-        assert_eq!(solo.directory, agent_path.to_string_lossy());
+        assert_eq!(solo.path, agent_path.to_string_lossy());
 
         let err = update_source_with_roots(
             SourceType::Agent,
-            &solo.directory,
+            &solo.path,
             "Solo",
             "Built in",
             "Updated",
-            None,
-            &[SourceRoot::read_only(root.canonicalize().unwrap())],
+            UpdateSourceOptions {
+                metadata: None,
+                properties: None,
+                additional_roots: &[SourceRoot::read_only(root.canonicalize().unwrap())],
+            },
         )
         .unwrap_err();
         assert!(format!("{:?}", err).contains("read-only"));
 
         let err = delete_source_with_roots(
             SourceType::Agent,
-            &solo.directory,
+            &solo.path,
             &[SourceRoot::read_only(root.canonicalize().unwrap())],
         )
         .unwrap_err();
@@ -1417,10 +1448,12 @@ mod tests {
             "my-skill",
             "does the thing",
             "step one\nstep two",
-            None,
-            false,
-            Some(project),
-            HashMap::new(),
+            CreateSourceOptions {
+                metadata: None,
+                global: false,
+                project_dir: Some(project),
+                properties: HashMap::new(),
+            },
         )
         .unwrap();
         assert_eq!(created.name, "my-skill");
@@ -1458,10 +1491,12 @@ mod tests {
             "dup",
             "d",
             "c",
-            None,
-            false,
-            Some(project),
-            HashMap::new(),
+            CreateSourceOptions {
+                metadata: None,
+                global: false,
+                project_dir: Some(project),
+                properties: HashMap::new(),
+            },
         )
         .unwrap();
         let err = create_source(
@@ -1469,10 +1504,12 @@ mod tests {
             "dup",
             "d",
             "c",
-            None,
-            false,
-            Some(project),
-            HashMap::new(),
+            CreateSourceOptions {
+                metadata: None,
+                global: false,
+                project_dir: Some(project),
+                properties: HashMap::new(),
+            },
         )
         .unwrap_err();
         assert!(format!("{:?}", err).contains("already exists"));
@@ -1485,10 +1522,12 @@ mod tests {
             "x",
             "d",
             "c",
-            None,
-            false,
-            None,
-            HashMap::new(),
+            CreateSourceOptions {
+                metadata: None,
+                global: false,
+                project_dir: None,
+                properties: HashMap::new(),
+            },
         )
         .unwrap_err();
         assert!(format!("{:?}", err).contains("projectDir"));
@@ -1507,10 +1546,12 @@ mod tests {
             "portable",
             "describes itself",
             "body goes here",
-            None,
-            false,
-            Some(project_a.to_str().unwrap()),
-            HashMap::new(),
+            CreateSourceOptions {
+                metadata: None,
+                global: false,
+                project_dir: Some(project_a.to_str().unwrap()),
+                properties: HashMap::new(),
+            },
         )
         .unwrap();
 
@@ -1607,10 +1648,12 @@ mod tests {
             "busy",
             "d",
             "c",
-            None,
-            false,
-            Some(project),
-            HashMap::new(),
+            CreateSourceOptions {
+                metadata: None,
+                global: false,
+                project_dir: Some(project),
+                properties: HashMap::new(),
+            },
         )
         .unwrap();
 
@@ -1736,10 +1779,12 @@ mod tests {
             "x",
             "d",
             "c",
-            None,
-            false,
-            Some(project),
-            HashMap::new(),
+            CreateSourceOptions {
+                metadata: None,
+                global: false,
+                project_dir: Some(project),
+                properties: HashMap::new(),
+            },
         )
         .unwrap_err();
         assert!(format!("{:?}", err).contains("not supported"));
@@ -1810,10 +1855,12 @@ mod tests {
             "my-dir",
             "orig",
             "body",
-            None,
-            false,
-            Some(project),
-            HashMap::new(),
+            CreateSourceOptions {
+                metadata: None,
+                global: false,
+                project_dir: Some(project),
+                properties: HashMap::new(),
+            },
         )
         .unwrap();
 

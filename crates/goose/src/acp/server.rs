@@ -225,6 +225,17 @@ struct AgentSetupRequest {
     prebuilt_provider: Option<Arc<dyn Provider>>,
 }
 
+pub struct GooseAcpAgentOptions {
+    pub provider_factory: AcpProviderFactory,
+    pub builtins: Vec<String>,
+    pub data_dir: std::path::PathBuf,
+    pub config_dir: std::path::PathBuf,
+    pub goose_mode: GooseMode,
+    pub disable_session_naming: bool,
+    pub goose_platform: GoosePlatform,
+    pub additional_source_roots: Vec<SourceRoot>,
+}
+
 pub struct GooseAcpAgent {
     sessions: Arc<Mutex<HashMap<String, GooseAcpSession>>>,
     provider_factory: AcpProviderFactory,
@@ -1048,17 +1059,8 @@ impl GooseAcpAgent {
     }
 
     // TODO: goose reads Paths::in_state_dir globally (e.g. RequestLog), ignoring this data_dir.
-    pub async fn new(
-        provider_factory: AcpProviderFactory,
-        builtins: Vec<String>,
-        data_dir: std::path::PathBuf,
-        config_dir: std::path::PathBuf,
-        goose_mode: GooseMode,
-        disable_session_naming: bool,
-        goose_platform: GoosePlatform,
-        additional_source_roots: Vec<SourceRoot>,
-    ) -> Result<Self> {
-        let session_manager = Arc::new(SessionManager::new(data_dir));
+    pub async fn new(options: GooseAcpAgentOptions) -> Result<Self> {
+        let session_manager = Arc::new(SessionManager::new(options.data_dir));
 
         // Eagerly initialize the SQLite pool so it's ready when providers/sessions need it.
         let storage_clone = session_manager.storage().clone();
@@ -1069,25 +1071,25 @@ impl GooseAcpAgent {
         let thread_manager = Arc::new(crate::session::ThreadManager::new(
             session_manager.storage().clone(),
         ));
-        let permission_manager = Arc::new(PermissionManager::new(config_dir.clone()));
+        let permission_manager = Arc::new(PermissionManager::new(options.config_dir.clone()));
         let provider_inventory = ProviderInventoryService::new(session_manager.storage().clone());
 
         Ok(Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            provider_factory,
-            builtins,
+            provider_factory: options.provider_factory,
+            builtins: options.builtins,
             client_fs_capabilities: OnceCell::new(),
             client_terminal: OnceCell::new(),
             client_mcp_host_info: OnceCell::new(),
-            config_dir,
+            config_dir: options.config_dir,
             session_manager,
             thread_manager,
             permission_manager,
-            goose_mode,
-            disable_session_naming,
+            goose_mode: options.goose_mode,
+            disable_session_naming: options.disable_session_naming,
             provider_inventory,
-            goose_platform,
-            additional_source_roots,
+            goose_platform: options.goose_platform,
+            additional_source_roots: options.additional_source_roots,
         })
     }
 
