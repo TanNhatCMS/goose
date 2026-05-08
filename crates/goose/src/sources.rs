@@ -13,7 +13,6 @@ use agent_client_protocol::Error;
 use fs_err as fs;
 use goose_sdk::custom_requests::{SourceEntry, SourceType};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::warn;
@@ -58,7 +57,7 @@ fn require_listable_type(source_type: Option<SourceType>) -> Result<SourceType, 
 // --- Project helpers ---
 
 #[derive(Deserialize)]
-struct ProjectFront {
+struct MarkdownSourceFrontmatter {
     #[serde(default)]
     name: String,
     #[serde(default)]
@@ -75,37 +74,43 @@ fn project_file_path(slug: &str) -> PathBuf {
     projects_dir().join(format!("{slug}.md"))
 }
 
-fn build_project_md(
-    name: &str,
-    description: &str,
-    content: &str,
-    properties: &HashMap<String, serde_json::Value>,
-) -> String {
-    let mut fm = serde_yaml::Mapping::new();
-    fm.insert(
-        serde_yaml::Value::String("name".into()),
-        serde_yaml::Value::String(name.into()),
-    );
-    fm.insert(
-        serde_yaml::Value::String("description".into()),
-        serde_yaml::Value::String(description.into()),
-    );
-    for (k, v) in properties {
-        if k == "name" || k == "description" {
-            continue;
-        }
-        if let Ok(yv) = serde_yaml::to_value(v) {
-            fm.insert(serde_yaml::Value::String(k.clone()), yv);
-        }
-    }
-    let yaml = serde_yaml::to_string(&fm).unwrap_or_default();
+fn build_source_md<T: Serialize>(frontmatter: &T, content: &str) -> Result<String, Error> {
+    let yaml = serde_yaml::to_string(frontmatter)
+        .map_err(|e| Error::internal_error().data(format!("Failed to serialize source: {e}")))?;
     let mut md = format!("---\n{yaml}---\n");
     if !content.is_empty() {
         md.push('\n');
         md.push_str(content);
         md.push('\n');
     }
-    md
+    Ok(md)
+}
+
+fn build_project_md(
+    name: &str,
+    description: &str,
+    content: &str,
+    properties: &HashMap<String, serde_json::Value>,
+) -> Result<String, Error> {
+    let mut frontmatter = serde_yaml::Mapping::new();
+    frontmatter.insert(
+        serde_yaml::Value::String("name".into()),
+        serde_yaml::Value::String(name.into()),
+    );
+    frontmatter.insert(
+        serde_yaml::Value::String("description".into()),
+        serde_yaml::Value::String(description.into()),
+    );
+    for (key, value) in properties {
+        if key == "name" || key == "description" {
+            continue;
+        }
+        let value = serde_yaml::to_value(value).map_err(|e| {
+            Error::internal_error().data(format!("Failed to serialize source property: {e}"))
+        })?;
+        frontmatter.insert(serde_yaml::Value::String(key.clone()), value);
+    }
+    build_source_md(&frontmatter, content)
 }
 
 /// Returns (display_name, description, body, properties).
@@ -120,7 +125,7 @@ fn parse_project_frontmatter(
             HashMap::new(),
         );
     }
-    match parse_frontmatter::<ProjectFront>(raw) {
+    match parse_frontmatter::<MarkdownSourceFrontmatter>(raw) {
         Ok(Some((meta, body))) => (meta.name, meta.description, body, meta.properties),
         _ => (
             String::new(),
@@ -318,19 +323,6 @@ fn agent_source_entry_from_parts(
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct AgentFrontmatter {
-    name: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    avatar: Option<String>,
-}
-
 fn agent_base_dir(global: bool, project_dir: Option<&str>) -> Result<PathBuf, Error> {
     if global {
         Ok(Paths::agents_dir())
@@ -399,120 +391,17 @@ fn slugify_agent_name(name: &str) -> String {
     }
 }
 
-fn agent_property_fields(
-    properties: &HashMap<String, serde_json::Value>,
-) -> (Option<String>, Option<String>, Option<String>) {
-    let read_string = |key: &str| {
-        properties
-            .get(key)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-    };
-    (
-        read_string("provider"),
-        read_string("model"),
-        read_string("avatar"),
-    )
-}
-
-fn agent_avatars_dir() -> Result<PathBuf, Error> {
-    Ok(dirs::home_dir()
-        .ok_or_else(|| Error::internal_error().data("Could not determine home directory"))?
-        .join(".goose")
-        .join("avatars")
-        .join("agents"))
-}
-
-fn normalize_agent_avatar(avatar: Option<String>) -> Option<String> {
-    let avatar = avatar?.trim().to_string();
-    if avatar.is_empty() {
-        return None;
-    }
-
-    let persisted = if avatar.starts_with("file://") {
-        persist_file_url_avatar(&avatar)
-    } else {
-        return Some(avatar);
-    };
-
-    match persisted {
-        Ok(path) => Some(path),
-        Err(err) => {
-            warn!("Failed to persist agent avatar: {:?}", err);
-            Some(avatar)
-        }
-    }
-}
-
-fn persist_file_url_avatar(file_url: &str) -> Result<String, Error> {
-    let url = url::Url::parse(file_url)
-        .map_err(|e| Error::invalid_params().data(format!("Invalid avatar file URL: {e}")))?;
-    let source = url
-        .to_file_path()
-        .map_err(|_| Error::invalid_params().data("Invalid avatar file URL path"))?;
-    let extension = source
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("png")
-        .to_lowercase();
-
-    let dir = agent_avatars_dir()?;
-    fs::create_dir_all(&dir).map_err(|e| {
-        Error::internal_error().data(format!("Failed to create avatar directory: {e}"))
-    })?;
-    let path = dir.join(format!("{}.{}", uuid::Uuid::now_v7(), extension));
-    fs::copy(&source, &path)
-        .map_err(|e| Error::internal_error().data(format!("Failed to copy avatar file: {e}")))?;
-    Ok(format!("file://{}", path.to_string_lossy()))
-}
-
-fn agent_properties(
-    provider: Option<String>,
-    model: Option<String>,
-    avatar: Option<String>,
-) -> HashMap<String, serde_json::Value> {
-    let mut properties = HashMap::new();
-    if let Some(provider) = provider.filter(|value| !value.trim().is_empty()) {
-        properties.insert("provider".to_string(), Value::String(provider));
-    }
-    if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
-        properties.insert("model".to_string(), Value::String(model));
-    }
-    if let Some(avatar) = avatar.filter(|value| !value.trim().is_empty()) {
-        properties.insert("avatar".to_string(), Value::String(avatar));
-    }
-    properties
-}
-
 fn build_agent_md(
     name: &str,
     description: &str,
     content: &str,
     properties: &HashMap<String, serde_json::Value>,
 ) -> Result<String, Error> {
-    let (provider, model, avatar) = agent_property_fields(properties);
-    let frontmatter = AgentFrontmatter {
-        name: name.to_string(),
-        description: description.to_string(),
-        provider,
-        model,
-        avatar: normalize_agent_avatar(avatar),
-    };
-    let yaml = serde_yaml::to_string(&frontmatter)
-        .map_err(|e| Error::internal_error().data(format!("Failed to serialize agent: {e}")))?;
-    let mut md = format!("---\n{}---\n", yaml);
-    if !content.is_empty() {
-        md.push('\n');
-        md.push_str(content);
-        md.push('\n');
-    }
-    Ok(md)
+    build_project_md(name, description, content, properties)
 }
 
-fn parse_agent_frontmatter(raw: &str) -> Result<(AgentFrontmatter, String), Error> {
-    parse_frontmatter::<AgentFrontmatter>(raw)
+fn parse_agent_frontmatter(raw: &str) -> Result<(MarkdownSourceFrontmatter, String), Error> {
+    parse_frontmatter::<MarkdownSourceFrontmatter>(raw)
         .map_err(|e| Error::invalid_params().data(format!("Invalid agent frontmatter: {e}")))?
         .ok_or_else(|| Error::invalid_params().data("Agent file is missing frontmatter"))
 }
@@ -527,7 +416,7 @@ fn agent_source_entry(path: &Path, global: bool, writable: bool) -> Result<Sourc
         &content,
         path,
         global,
-        agent_properties(frontmatter.provider, frontmatter.model, frontmatter.avatar),
+        frontmatter.properties,
         writable,
     ))
 }
@@ -797,7 +686,7 @@ pub fn create_source(
                 .get("title")
                 .and_then(|v| v.as_str())
                 .unwrap_or(name);
-            let md = build_project_md(display_name, description, content, &properties);
+            let md = build_project_md(display_name, description, content, &properties)?;
             fs::write(&file, md).map_err(|e| {
                 Error::internal_error().data(format!("Failed to write project file: {e}"))
             })?;
@@ -930,7 +819,7 @@ pub fn update_source_with_roots(
                 .get("title")
                 .and_then(|v| v.as_str())
                 .unwrap_or(name);
-            let md = build_project_md(display_name, description, content, &resolved_properties);
+            let md = build_project_md(display_name, description, content, &resolved_properties)?;
             fs::write(&file, md).map_err(|e| {
                 Error::internal_error().data(format!("Failed to write project file: {e}"))
             })?;
