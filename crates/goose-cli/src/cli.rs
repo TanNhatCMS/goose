@@ -29,7 +29,6 @@ use crate::commands::schedule::{
     handle_schedule_sessions,
 };
 use crate::commands::session::{handle_session_list, handle_session_remove};
-use crate::commands::skills::handle_skills_list;
 use crate::recipes::extract_from_cli::extract_recipe_info_from_cli;
 use crate::recipes::recipe::{explain_recipe, render_recipe_as_yaml};
 use crate::session::{build_session, SessionBuilderConfig};
@@ -359,6 +358,13 @@ pub struct RunBehavior {
         long_help = "Continue from a previous run, maintaining the execution state and context."
     )]
     pub resume: bool,
+
+    /// Print generation statistics after completion
+    #[arg(
+        long = "stats",
+        help = "Print generation statistics after the run completes"
+    )]
+    pub stats: bool,
 
     /// Scheduled job ID (used internally for scheduled executions)
     #[arg(
@@ -701,13 +707,6 @@ enum PluginCommand {
 }
 
 #[derive(Subcommand)]
-enum SkillsCommand {
-    /// List all skills available to the goose agent
-    #[command(about = "List all skills available to the goose agent")]
-    List,
-}
-
-#[derive(Subcommand)]
 enum RecipeCommand {
     /// Validate a recipe file
     #[command(about = "Validate a recipe")]
@@ -918,13 +917,6 @@ enum Command {
         command: RecipeCommand,
     },
 
-    /// Skill utilities
-    #[command(about = "Skill utilities")]
-    Skills {
-        #[command(subcommand)]
-        command: SkillsCommand,
-    },
-
     /// Manage plugins
     #[command(about = "Manage plugins")]
     Plugin {
@@ -950,7 +942,6 @@ enum Command {
     },
 
     /// Update the goose CLI version
-    #[cfg(feature = "update")]
     #[command(about = "Update the goose CLI version")]
     Update {
         /// Update to canary version
@@ -984,28 +975,6 @@ enum Command {
         #[command(subcommand)]
         command: TermCommand,
     },
-
-    /// Launch the goose terminal UI (TUI)
-    #[cfg(feature = "tui")]
-    #[command(
-        about = "Launch the goose terminal UI",
-        long_about = "Launch the goose terminal UI (the @aaif/goose npm package).\n\
-                      \n\
-                      Resolution order:\n  \
-                      1. GOOSE_TUI_SCRIPT, if set to an existing dist/tui.js\n  \
-                      2. A local checkout's ui/text/dist/tui.js (dev workflow)\n  \
-                      3. `npx --yes --package <spec> -- goose-tui` (deployed installs)\n\
-                      \n\
-                      Override the npm spec via GOOSE_TUI_NPM_SPEC (default: @aaif/goose@latest).\n\
-                      Local script mode requires `node` on PATH; npx mode requires `npx` on PATH.\n\
-                      Any extra arguments are passed through to the TUI."
-    )]
-    Tui {
-        /// Arguments forwarded to the TUI
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
     /// Manage local inference models
     #[cfg(feature = "local-inference")]
     #[command(about = "Manage local inference models", visible_alias = "lm")]
@@ -1026,104 +995,6 @@ enum Command {
         bin_name: String,
     },
 
-    /// Local code review.
-    ///
-    /// Discovers `**/.agents/checks/*.md` subagent reviewers and
-    /// `**/.agents/REVIEW.md` scoped prompt overrides, builds a review
-    /// request from the working tree (or an explicit diff range), and
-    /// runs the review through goose.
-    #[command(about = "Review the current diff using goose")]
-    Review {
-        /// Diff range to review (e.g. "main...HEAD"). Defaults to the working
-        /// tree vs HEAD.
-        #[arg(value_name = "RANGE")]
-        range: Option<String>,
-
-        /// Path to a Markdown file with a custom base review prompt. Replaces
-        /// the embedded default prompt.
-        #[arg(long = "prompt", value_name = "FILE")]
-        prompt: Option<PathBuf>,
-
-        /// Default model used for the main review agent and for any check
-        /// that does not declare its own `model:` in frontmatter.
-        #[arg(long = "model", value_name = "MODEL")]
-        model: Option<String>,
-
-        /// Provider for the main review agent.
-        #[arg(long = "provider", value_name = "PROVIDER")]
-        provider: Option<String>,
-
-        /// Force every discovered check to use this model, regardless of
-        /// the check's own `model:` field.
-        #[arg(long = "override-model", value_name = "MODEL")]
-        override_model: Option<String>,
-
-        /// Default `turn-limit` applied to checks that do not declare their
-        /// own.
-        #[arg(long = "turn-limit", value_name = "N")]
-        turn_limit: Option<usize>,
-
-        /// Print the assembled review prompt and discovered checks instead of
-        /// running the review.
-        #[arg(long = "dry-run")]
-        dry_run: bool,
-
-        /// Suppress non-result output from the underlying agent.
-        #[arg(long, short = 'q')]
-        quiet: bool,
-
-        /// Disable the Rust-driven parallel orchestrator and fall back to
-        /// the single-prompt path that asks the main agent to delegate
-        /// each check via `delegate(... async: true ...)`. The default
-        /// orchestrator dispatches one `goose run` subprocess per check
-        /// (capped at 4 concurrent), bounding wall-clock to the slowest
-        /// single check rather than waiting on the model to issue
-        /// dispatches.
-        #[arg(long = "no-orchestrate")]
-        no_orchestrate: bool,
-
-        /// Additional free-form instructions to prepend to the review
-        /// (e.g. PR intent, commit-message context, "this is a refactor,
-        /// flag any behavior change"). Mirrors `amp review --instructions`
-        /// for drop-in compatibility with existing reviewer wrappers.
-        #[arg(long = "instructions", short = 'i', value_name = "TEXT")]
-        instructions: Option<String>,
-
-        /// Restrict the review to a specific set of files. Other files in
-        /// the diff are still passed to the agent for context but are
-        /// excluded from the assembled diff sent to checks. Mirrors
-        /// `amp review --files`.
-        #[arg(long = "files", short = 'f', value_name = "FILE", num_args = 1..)]
-        files: Vec<String>,
-
-        /// Only run checks whose `name` matches one of these. Other
-        /// discovered checks are skipped. Mirrors `amp review --check-filter`.
-        #[arg(long = "check-filter", short = 'c', value_name = "NAME", num_args = 1..)]
-        check_filter: Vec<String>,
-
-        /// Alternate directory to search for `.agents/checks/*.md` instead
-        /// of the repo root. Mirrors `amp review --check-scope`.
-        #[arg(long = "check-scope", short = 's', value_name = "DIR")]
-        check_scope: Option<PathBuf>,
-
-        /// Skip the main correctness pass and only run check subagents.
-        /// Mirrors `amp review --checks-only`.
-        #[arg(long = "checks-only")]
-        checks_only: bool,
-
-        /// Print only the diff summary; skip the full review.
-        /// Mirrors `amp review --summary-only`.
-        #[arg(long = "summary-only")]
-        summary_only: bool,
-
-        /// Minimum severity to display. Findings below this rank are
-        /// dropped from the output. Default is `medium`, matching
-        /// Amp's CLI which hides `low` from review output. Pass
-        /// `--severity low` to surface every finding.
-        #[arg(long = "severity", value_name = "LEVEL", default_value = "medium")]
-        severity: String,
-    },
-
     #[command(
         name = "validate-extensions",
         about = "Validate a bundled-extensions.json file",
@@ -1138,8 +1009,8 @@ enum Command {
 #[cfg(feature = "local-inference")]
 #[derive(Subcommand)]
 enum LocalModelsCommand {
-    /// Search HuggingFace for GGUF models
-    #[command(about = "Search HuggingFace for GGUF models")]
+    /// Search HuggingFace for local models
+    #[command(about = "Search HuggingFace for local GGUF and MLX models")]
     Search {
         /// Search query
         query: String,
@@ -1150,9 +1021,9 @@ enum LocalModelsCommand {
     },
 
     /// Download a model from HuggingFace
-    #[command(about = "Download a GGUF model (e.g. bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M)")]
+    #[command(about = "Download a local model from a search result")]
     Download {
-        /// Model spec in user/repo:quantization format
+        /// Model spec/download id, e.g. user/repo:Q4_K_M or user/repo
         spec: String,
     },
 
@@ -1286,18 +1157,13 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Run { .. }) => "run",
         Some(Command::Gateway { .. }) => "gateway",
         Some(Command::Schedule { .. }) => "schedule",
-        #[cfg(feature = "update")]
         Some(Command::Update { .. }) => "update",
         Some(Command::Recipe { .. }) => "recipe",
-        Some(Command::Skills { .. }) => "skills",
         Some(Command::Plugin { .. }) => "plugin",
         Some(Command::Term { .. }) => "term",
-        #[cfg(feature = "tui")]
-        Some(Command::Tui { .. }) => "tui",
         #[cfg(feature = "local-inference")]
         Some(Command::LocalModels { .. }) => "local-models",
         Some(Command::Completion { .. }) => "completion",
-        Some(Command::Review { .. }) => "review",
         Some(Command::ValidateExtensions { .. }) => "validate-extensions",
         None => "default_session",
     }
@@ -1517,6 +1383,7 @@ async fn handle_interactive_session(
         quiet: false,
         output_format: "text".to_string(),
         container: session_opts.container.map(Container::new),
+        stats: false,
     })
     .await;
 
@@ -1729,6 +1596,7 @@ async fn handle_run_command(
         quiet: output_opts.quiet,
         output_format: output_opts.output_format,
         container: session_opts.container.map(Container::new),
+        stats: run_behavior.stats,
     })
     .await;
 
@@ -1817,12 +1685,6 @@ fn handle_recipe_subcommand(command: RecipeCommand) -> Result<()> {
     }
 }
 
-async fn handle_skills_subcommand(command: SkillsCommand) -> Result<()> {
-    match command {
-        SkillsCommand::List => handle_skills_list().await,
-    }
-}
-
 async fn handle_term_subcommand(command: TermCommand) -> Result<()> {
     match command {
         TermCommand::Init {
@@ -1837,19 +1699,36 @@ async fn handle_term_subcommand(command: TermCommand) -> Result<()> {
 }
 
 #[cfg(feature = "local-inference")]
+fn print_download_progress(manager: &goose::download_manager::DownloadManager) {
+    let Some(progress) = manager
+        .list_progress()
+        .into_iter()
+        .find(|progress| progress.status == goose::download_manager::DownloadStatus::Downloading)
+    else {
+        return;
+    };
+
+    print!(
+        "\r  {:.1}% ({:.0}MB / {:.0}MB)",
+        progress.progress_percent,
+        progress.bytes_downloaded as f64 / (1024.0 * 1024.0),
+        progress.total_bytes as f64 / (1024.0 * 1024.0),
+    );
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+}
+
 async fn handle_local_models_command(command: LocalModelsCommand) -> Result<()> {
     use goose::providers::local_inference::hf_models;
-    use goose::providers::local_inference::local_model_registry::{
-        get_registry, mmproj_local_path, model_id_from_repo, LocalModelEntry,
-    };
+    use goose::providers::local_inference::local_model_registry::get_registry;
 
     match command {
         LocalModelsCommand::Search { query, limit } => {
             println!("Searching HuggingFace for '{}'...", query);
-            let results = hf_models::search_gguf_models(&query, limit).await?;
+            let results = hf_models::search_local_models(&query, limit).await?;
 
             if results.is_empty() {
-                println!("No GGUF models found.");
+                println!("No compatible local models found.");
                 return Ok(());
             }
 
@@ -1858,126 +1737,68 @@ async fn handle_local_models_command(command: LocalModelsCommand) -> Result<()> 
                     "\n{} (by {}) — {} downloads",
                     model.model_name, model.author, model.downloads
                 );
-                for file in &model.gguf_files {
-                    let size = if file.size_bytes > 0 {
+                for variant in &model.variants {
+                    let size = if variant.size_bytes > 0 {
                         format!(
                             "{:.1}GB",
-                            file.size_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+                            variant.size_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
                         )
                     } else {
                         "unknown".to_string()
                     };
-                    println!("  {} — {}", file.quantization, size);
+                    let support = if variant.supported {
+                        String::new()
+                    } else {
+                        format!(
+                            " ({})",
+                            variant
+                                .unsupported_reason
+                                .as_deref()
+                                .unwrap_or("unsupported on this platform")
+                        )
+                    };
+                    println!(
+                        "  [{}] {} — {} — {}{}",
+                        variant.format, variant.label, size, variant.description, support
+                    );
+                    if variant.supported {
+                        println!(
+                            "    Download: goose local-models download '{}'",
+                            variant.download_id
+                        );
+                    }
                 }
-                println!(
-                    "  Download: goose local-models download {}:<quantization>",
-                    model.repo_id
-                );
             }
         }
         LocalModelsCommand::Download { spec } => {
             println!("Resolving {}...", spec);
-            let (repo_id, resolved) = hf_models::resolve_model_spec_full(&spec).await?;
-            if resolved.files.len() > 1 {
-                anyhow::bail!(
-                    "Model '{}' is sharded ({} files) — download it from the desktop UI",
-                    spec,
-                    resolved.files.len()
-                );
-            }
-            let mmproj = resolved.mmproj;
-            let file = resolved.files.into_iter().next().unwrap();
-            let model_id = model_id_from_repo(&repo_id, &file.quantization);
-            let local_path =
-                goose::config::paths::Paths::in_data_dir("models").join(&file.filename);
-            let mmproj_path = mmproj
-                .as_ref()
-                .map(|mmproj| mmproj_local_path(&repo_id, &mmproj.filename));
-            let mmproj_source_url = mmproj.as_ref().map(|mmproj| mmproj.download_url.clone());
-            let mmproj_size_bytes = mmproj.as_ref().map_or(0, |mmproj| mmproj.size_bytes);
-            let mut download_files = vec![(file.download_url.clone(), local_path.clone())];
-            if let Some(mmproj) = mmproj {
-                download_files.push((mmproj.download_url, mmproj_path.clone().unwrap()));
-            }
+            let manager = goose::download_manager::get_download_manager();
+            let resolve_task = hf_models::resolve_local_model_spec(&spec);
+            tokio::pin!(resolve_task);
+            let resolved = loop {
+                tokio::select! {
+                    result = &mut resolve_task => break result?,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                        print_download_progress(manager);
+                    }
+                }
+            };
+            let model_id = resolved.model_id();
+            let total_size = resolved.total_size();
 
             println!(
-                "Downloading {} ({})...",
+                "\nDownloaded {} ({}). Registering...",
                 model_id,
-                if file.size_bytes > 0 {
-                    format!(
-                        "{:.1}GB",
-                        file.size_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
-                    )
+                if total_size > 0 {
+                    format!("{:.1}GB", total_size as f64 / (1024.0 * 1024.0 * 1024.0))
                 } else {
                     "unknown size".to_string()
                 }
             );
 
-            // Register
-            let entry = LocalModelEntry {
-                id: model_id.clone(),
-                repo_id: repo_id.clone(),
-                filename: file.filename.clone(),
-                quantization: file.quantization.clone(),
-                local_path: local_path.clone(),
-                source_url: file.download_url.clone(),
-                settings: Default::default(),
-                size_bytes: file.size_bytes,
-                mmproj_path,
-                mmproj_source_url,
-                mmproj_size_bytes,
-                mmproj_checked: true,
-                shard_files: vec![],
-            };
+            let model_id = hf_models::register_resolved_model(resolved, &spec)?;
 
-            {
-                let mut registry = get_registry()
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("Failed to acquire registry lock"))?;
-                registry.add_model(entry)?;
-            }
-
-            // Download
-            let manager = goose::download_manager::get_download_manager();
-            manager
-                .download_model_sharded(
-                    format!("{}-model", model_id),
-                    download_files,
-                    file.size_bytes + mmproj_size_bytes,
-                    None,
-                )
-                .await?;
-
-            // Poll progress
-            loop {
-                if let Some(progress) = manager.get_progress(&format!("{}-model", model_id)) {
-                    match progress.status {
-                        goose::download_manager::DownloadStatus::Downloading => {
-                            print!(
-                                "\r  {:.1}% ({:.0}MB / {:.0}MB)",
-                                progress.progress_percent,
-                                progress.bytes_downloaded as f64 / (1024.0 * 1024.0),
-                                progress.total_bytes as f64 / (1024.0 * 1024.0),
-                            );
-                            use std::io::Write;
-                            std::io::stdout().flush().ok();
-                        }
-                        goose::download_manager::DownloadStatus::Completed => {
-                            println!("\nDownloaded: {}", model_id);
-                            break;
-                        }
-                        goose::download_manager::DownloadStatus::Failed => {
-                            let err = progress.error.unwrap_or_default();
-                            anyhow::bail!("Download failed: {}", err);
-                        }
-                        goose::download_manager::DownloadStatus::Cancelled => {
-                            println!("\nDownload cancelled.");
-                            break;
-                        }
-                    }
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
+            println!("Registered: {}", model_id);
         }
         LocalModelsCommand::List => {
             let registry = get_registry()
@@ -1990,12 +1811,16 @@ async fn handle_local_models_command(command: LocalModelsCommand) -> Result<()> 
                 return Ok(());
             }
 
-            println!("{:<50} {:<10} Downloaded", "ID", "Quant");
-            println!("{}", "-".repeat(70));
+            println!(
+                "{:<50} {:<10} {:<12} Downloaded",
+                "ID", "Backend", "Variant"
+            );
+            println!("{}", "-".repeat(88));
             for m in models {
                 println!(
-                    "{:<50} {:<10} {}",
+                    "{:<50} {:<10} {:<12} {}",
                     m.id,
+                    m.backend_id.as_deref().unwrap_or("llamacpp"),
                     m.quantization,
                     if m.is_downloaded() { "✓" } else { "✗" }
                 );
@@ -2007,8 +1832,8 @@ async fn handle_local_models_command(command: LocalModelsCommand) -> Result<()> 
                 .map_err(|_| anyhow::anyhow!("Failed to acquire registry lock"))?;
 
             if let Some(entry) = registry.get_model(&id) {
-                if entry.local_path.exists() {
-                    std::fs::remove_file(&entry.local_path)?;
+                for path in entry.all_local_paths() {
+                    std::fs::remove_file(path)?;
                 }
                 registry.remove_model(&id)?;
                 println!("Deleted model: {}", id);
@@ -2055,6 +1880,7 @@ async fn handle_default_session() -> Result<()> {
         quiet: false,
         output_format: "text".to_string(),
         container: None,
+        stats: false,
     })
     .await;
     session.interactive(None).await
@@ -2144,7 +1970,6 @@ pub async fn cli() -> anyhow::Result<()> {
         }
         Some(Command::Gateway { command }) => handle_gateway_command(command).await,
         Some(Command::Schedule { command }) => handle_schedule_command(command).await,
-        #[cfg(feature = "update")]
         Some(Command::Update {
             canary,
             reconfigure,
@@ -2153,52 +1978,10 @@ pub async fn cli() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Recipe { command }) => handle_recipe_subcommand(command),
-        Some(Command::Skills { command }) => handle_skills_subcommand(command).await,
         Some(Command::Plugin { command }) => handle_plugin_subcommand(command),
         Some(Command::Term { command }) => handle_term_subcommand(command).await,
-        #[cfg(feature = "tui")]
-        Some(Command::Tui { args }) => crate::commands::tui::handle_tui(args),
         #[cfg(feature = "local-inference")]
         Some(Command::LocalModels { command }) => handle_local_models_command(command).await,
-        Some(Command::Review {
-            range,
-            prompt,
-            model,
-            provider,
-            override_model,
-            turn_limit,
-            dry_run,
-            quiet,
-            no_orchestrate,
-            instructions,
-            files,
-            check_filter,
-            check_scope,
-            checks_only,
-            summary_only,
-            severity,
-        }) => {
-            use crate::commands::review::{handle_review, ReviewOptions};
-            handle_review(ReviewOptions {
-                range,
-                prompt_file: prompt,
-                default_model: model,
-                provider,
-                override_model,
-                default_turn_limit: turn_limit,
-                dry_run,
-                quiet,
-                no_orchestrate,
-                instructions,
-                files,
-                check_filter,
-                check_scope,
-                checks_only,
-                summary_only,
-                severity,
-            })
-            .await
-        }
         Some(Command::ValidateExtensions { file }) => {
             use goose::agents::validate_extensions::validate_bundled_extensions;
             match validate_bundled_extensions(&file) {
