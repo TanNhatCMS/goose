@@ -210,7 +210,7 @@ fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
 }
 
 fn configured_reasoning_effort(model_name: &str, config: &crate::config::Config) -> Option<String> {
-    let effort = String::from(config.get_chatgpt_codex_reasoning_effort().ok()?);
+    let effort = config.get_chatgpt_codex_reasoning_effort().ok()?;
     let valid_levels = reasoning_levels_for_model(model_name);
 
     if valid_levels.contains(&effort.as_str()) {

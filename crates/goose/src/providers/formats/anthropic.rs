@@ -118,6 +118,7 @@ const IS_ERROR_FIELD: &str = "is_error";
 const SIGNATURE_FIELD: &str = "signature";
 const DATA_FIELD: &str = "data";
 const EVENT_MESSAGE_START: &str = "message_start";
+const DEFAULT_PRESERVED_THINKING_BUDGET_TOKENS: i32 = 16000;
 const EVENT_MESSAGE_DELTA: &str = "message_delta";
 const EVENT_MESSAGE_STOP: &str = "message_stop";
 const EVENT_CONTENT_BLOCK_START: &str = "content_block_start";
@@ -523,6 +524,20 @@ pub fn thinking_budget_tokens(model_config: &ModelConfig) -> Option<i32> {
     thinking_budget_tokens_for_effort(model_config, model_config.thinking_effort())
 }
 
+fn preserved_thinking_budget_tokens(model_config: &ModelConfig) -> i32 {
+    let request_budget = model_config
+        .request_params
+        .as_ref()
+        .and_then(|params| params.get("budget_tokens"))
+        .and_then(|v| serde_json::from_value::<i32>(v.clone()).ok());
+
+    preserved_thinking_budget_tokens_for_values(
+        request_budget,
+        legacy_thinking_budget_tokens(),
+        model_config.thinking_effort(),
+    )
+}
+
 fn thinking_budget_tokens_for_effort(
     model_config: &ModelConfig,
     effort: Option<ThinkingEffort>,
@@ -556,6 +571,15 @@ fn thinking_budget_tokens_for_values(
         ThinkingEffort::High => 16000,
         ThinkingEffort::Max => 32000,
     })
+}
+
+fn preserved_thinking_budget_tokens_for_values(
+    request_budget: Option<i32>,
+    legacy_budget: Option<i32>,
+    effort: Option<ThinkingEffort>,
+) -> i32 {
+    thinking_budget_tokens_for_values(request_budget, legacy_budget, effort)
+        .unwrap_or(DEFAULT_PRESERVED_THINKING_BUDGET_TOKENS)
 }
 
 fn legacy_thinking_budget_tokens() -> Option<i32> {
@@ -611,16 +635,15 @@ fn apply_thinking_config(
                     obj.insert("output_config".to_string(), json!({"effort": effort}));
                 }
             } else {
-                if let Some(budget_tokens) = thinking_budget_tokens(model_config) {
-                    obj.insert("max_tokens".to_string(), json!(max_tokens + budget_tokens));
-                    obj.insert(
-                        "thinking".to_string(),
-                        json!({
-                            "type": "enabled",
-                            "budget_tokens": budget_tokens
-                        }),
-                    );
-                }
+                let budget_tokens = preserved_thinking_budget_tokens(model_config);
+                obj.insert("max_tokens".to_string(), json!(max_tokens + budget_tokens));
+                obj.insert(
+                    "thinking".to_string(),
+                    json!({
+                        "type": "enabled",
+                        "budget_tokens": budget_tokens
+                    }),
+                );
             }
         }
 
@@ -1327,7 +1350,8 @@ mod tests {
     }
 
     #[test]
-    fn test_create_request_preserves_thinking_context_for_compatible_models() -> Result<()> {
+    fn test_create_request_preserves_thinking_context_without_effort_for_compatible_models(
+    ) -> Result<()> {
         let _guard = env_lock::lock_env([
             ("GOOSE_THINKING_EFFORT", None::<&str>),
             ("CLAUDE_THINKING_TYPE", None::<&str>),
@@ -1338,7 +1362,7 @@ mod tests {
             ("ANTHROPIC_PRESERVE_UNSIGNED_THINKING", None::<&str>),
         ]);
 
-        let mut config = cfg_with_effort("glm-4.7", "high");
+        let mut config = cfg("glm-4.7");
         config.max_tokens = Some(4096);
         let messages = vec![
             Message::assistant().with_content(MessageContent::thinking("internal", "")),
@@ -1372,6 +1396,14 @@ mod tests {
     #[test]
     fn test_thinking_budget_omits_unset_default() {
         assert_eq!(thinking_budget_tokens_for_values(None, None, None), None);
+    }
+
+    #[test]
+    fn test_preserved_thinking_context_uses_budget_when_effort_unset() {
+        assert_eq!(
+            preserved_thinking_budget_tokens_for_values(None, None, None),
+            DEFAULT_PRESERVED_THINKING_BUDGET_TOKENS
+        );
     }
 
     #[test]
