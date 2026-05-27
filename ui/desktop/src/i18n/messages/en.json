@@ -95,15 +95,6 @@
   "bottomMenuExtensionSelection.searchExtensions": {
     "defaultMessage": "search extensions..."
   },
-  "bottomMenuModeSelection.autoFallback": {
-    "defaultMessage": "auto"
-  },
-  "bottomMenuModeSelection.automaticModeDescription": {
-    "defaultMessage": "Automatic mode selection"
-  },
-  "bottomMenuModeSelection.currentModeTitle": {
-    "defaultMessage": "Current mode: {label} - {description}"
-  },
   "cardButtons.configure": {
     "defaultMessage": "Configure"
   },
@@ -3695,9 +3686,6 @@
   "sessionIndicators.streaming": {
     "defaultMessage": "Streaming"
   },
-  "sessionItem.messageCount": {
-    "defaultMessage": "{count} messages"
-  },
   "sessionSharingSection.alreadyConfigured": {
     "defaultMessage": "Session sharing has already been configured"
   },
@@ -3820,9 +3808,6 @@
   },
   "sessions.error.tryAgain": {
     "defaultMessage": "Try Again"
-  },
-  "sessions.extensions": {
-    "defaultMessage": "Extensions:"
   },
   "sessions.import": {
     "defaultMessage": "Import Session"

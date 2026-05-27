@@ -1,7 +1,9 @@
+use crate::acp::custom_notifications::*;
 use crate::acp::custom_requests::*;
 use crate::acp::fs::AcpTools;
 use crate::acp::tools::AcpAwareToolMeta;
 use crate::acp::{PermissionDecision, ACP_CURRENT_MODEL};
+use crate::action_required_manager::ActionRequiredManager;
 use crate::agents::extension::{Envs, PLATFORM_EXTENSIONS};
 use crate::agents::extension_manager::TRUSTED_TOOL_UPDATE_META_KEY;
 use crate::agents::mcp_client::{GooseMcpHostInfo, McpClientTrait};
@@ -12,7 +14,10 @@ use crate::config::extensions::get_enabled_extensions_with_config;
 use crate::config::paths::Paths;
 use crate::config::permission::PermissionManager;
 use crate::config::{Config, GooseMode};
-use crate::conversation::message::{ActionRequiredData, Message, MessageContent, ToolRequest};
+use crate::conversation::message::{
+    ActionRequiredData, Message, MessageContent, SystemNotificationContent, SystemNotificationType,
+    ToolRequest,
+};
 use crate::mcp_utils::ToolResult;
 use crate::permission::permission_confirmation::PrincipalType;
 use crate::permission::{Permission, PermissionConfirmation};
@@ -77,6 +82,7 @@ mod custom_dispatch;
 mod dictation;
 mod dispatch;
 mod extensions;
+mod load_session;
 mod onboarding;
 mod providers;
 mod resources;
@@ -231,7 +237,6 @@ pub struct GooseAcpAgentOptions {
     pub builtins: Vec<String>,
     pub data_dir: std::path::PathBuf,
     pub config_dir: std::path::PathBuf,
-    pub goose_mode: GooseMode,
     pub disable_session_naming: bool,
     pub goose_platform: GoosePlatform,
     pub additional_source_roots: Vec<SourceRoot>,
@@ -248,7 +253,6 @@ pub struct GooseAcpAgent {
     config_dir: std::path::PathBuf,
     session_manager: Arc<SessionManager>,
     permission_manager: Arc<PermissionManager>,
-    goose_mode: GooseMode,
     disable_session_naming: bool,
     provider_inventory: ProviderInventoryService,
     goose_platform: GoosePlatform,
@@ -350,6 +354,19 @@ fn encode_session_list_cursor(
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
+fn display_title(s: &Session) -> Option<String> {
+    if !s.user_set_name {
+        if let Some(recipe) = &s.recipe {
+            return Some(recipe.title.clone());
+        }
+    }
+    if s.name.is_empty() {
+        None
+    } else {
+        Some(s.name.clone())
+    }
+}
+
 fn session_meta(session: &Session) -> serde_json::Map<String, serde_json::Value> {
     let mut meta = serde_json::Map::new();
     meta.insert(
@@ -369,6 +386,10 @@ fn session_meta(session: &Session) -> serde_json::Map<String, serde_json::Value>
     meta.insert(
         "userSetName".to_string(),
         serde_json::Value::Bool(session.user_set_name),
+    );
+    meta.insert(
+        "hasRecipe".to_string(),
+        serde_json::Value::Bool(session.recipe.is_some()),
     );
 
     if let Some(ref pid) = session.project_id {
@@ -1172,9 +1193,35 @@ fn build_prompt_usage(session: &Session) -> Option<Usage> {
     Some(Usage::new(total, input, output))
 }
 
-fn build_usage_update(session: &Session, context_limit: usize) -> UsageUpdate {
+struct UsageUpdates {
+    custom: GooseSessionNotification,
+    legacy: UsageUpdate,
+}
+
+fn build_usage_updates(
+    session_id: &SessionId,
+    session: &Session,
+    context_limit: usize,
+) -> UsageUpdates {
     let used = session.total_tokens.unwrap_or(0).max(0) as u64;
-    UsageUpdate::new(used, context_limit as u64)
+    let ctx_limit = context_limit as u64;
+    let accumulated_input_tokens =
+        to_nonnegative_u64(session.accumulated_input_tokens).unwrap_or(0);
+    let accumulated_output_tokens =
+        to_nonnegative_u64(session.accumulated_output_tokens).unwrap_or(0);
+    UsageUpdates {
+        custom: GooseSessionNotification {
+            session_id: session_id.0.to_string(),
+            update: GooseSessionUpdate::UsageUpdate(SessionUsageUpdate {
+                used,
+                context_limit: ctx_limit,
+                accumulated_input_tokens,
+                accumulated_output_tokens,
+                accumulated_cost: session.accumulated_cost,
+            }),
+        },
+        legacy: UsageUpdate::new(used, ctx_limit),
+    }
 }
 
 fn validate_absolute_cwd(cwd: &Path) -> Result<(), agent_client_protocol::Error> {
@@ -1248,7 +1295,6 @@ impl GooseAcpAgent {
             config_dir: options.config_dir,
             session_manager,
             permission_manager,
-            goose_mode: options.goose_mode,
             disable_session_naming: options.disable_session_naming,
             provider_inventory,
             goose_platform: options.goose_platform,
@@ -1782,6 +1828,7 @@ impl GooseAcpAgent {
         session_id: &SessionId,
         session_id_str: &str,
         message_id: Option<&str>,
+        message_created: i64,
         agent: &Arc<Agent>,
         session: &mut GooseAcpSession,
         cx: &ConnectionTo<Client>,
@@ -1790,9 +1837,10 @@ impl GooseAcpAgent {
             MessageContent::Text(text) => {
                 cx.send_notification(SessionNotification::new(
                     session_id.clone(),
-                    SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                        TextContent::new(text.text.clone()),
-                    ))),
+                    SessionUpdate::AgentMessageChunk(
+                        ContentChunk::new(ContentBlock::Text(TextContent::new(text.text.clone())))
+                            .meta(message_update_meta(message_id, message_created)),
+                    ),
                 ))?;
             }
             MessageContent::ToolRequest(tool_request) => {
@@ -1820,19 +1868,21 @@ impl GooseAcpAgent {
             MessageContent::Thinking(thinking) => {
                 cx.send_notification(SessionNotification::new(
                     session_id.clone(),
-                    SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::Text(
-                        TextContent::new(thinking.thinking.clone()),
-                    ))),
+                    SessionUpdate::AgentThoughtChunk(
+                        ContentChunk::new(ContentBlock::Text(TextContent::new(
+                            thinking.thinking.clone(),
+                        )))
+                        .meta(message_update_meta(message_id, message_created)),
+                    ),
                 ))?;
             }
-            MessageContent::ActionRequired(action_required) => {
-                if let ActionRequiredData::ToolConfirmation {
+            MessageContent::ActionRequired(action_required) => match &action_required.data {
+                ActionRequiredData::ToolConfirmation {
                     id,
                     tool_name,
                     arguments,
                     prompt,
-                } = &action_required.data
-                {
+                } => {
                     self.handle_tool_permission_request(
                         cx,
                         agent,
@@ -1843,6 +1893,25 @@ impl GooseAcpAgent {
                         prompt.clone(),
                     )?;
                 }
+                ActionRequiredData::Elicitation {
+                    id,
+                    message,
+                    requested_schema,
+                } => {
+                    send_elicitation_interaction_update(
+                        cx,
+                        session_id.0.as_ref(),
+                        id.clone(),
+                        InteractionState::Pending,
+                        Some(message.clone()),
+                        Some(requested_schema.clone()),
+                        Some(interaction_update_meta(message_id, message_created)),
+                    )?;
+                }
+                ActionRequiredData::ElicitationResponse { .. } => {}
+            },
+            MessageContent::SystemNotification(notification) => {
+                send_status_message_update(cx, session_id.0.as_ref(), notification)?;
             }
             _ => {}
         }
@@ -2377,6 +2446,111 @@ fn outcome_to_confirmation(outcome: &RequestPermissionOutcome) -> PermissionConf
     }
 }
 
+fn prompt_error_from_message_content(
+    content_item: &MessageContent,
+) -> Option<agent_client_protocol::Error> {
+    match content_item {
+        MessageContent::SystemNotification(notification)
+            if notification.notification_type == SystemNotificationType::CreditsExhausted =>
+        {
+            Some(credits_exhausted_prompt_error(notification))
+        }
+        _ => None,
+    }
+}
+
+fn credits_exhausted_prompt_error(
+    notification: &SystemNotificationContent,
+) -> agent_client_protocol::Error {
+    let mut data = serde_json::Map::new();
+    data.insert(
+        "reason".to_string(),
+        serde_json::Value::String("credits_exhausted".to_string()),
+    );
+
+    if let Some(url) = notification
+        .data
+        .as_ref()
+        .and_then(|data| data.get("top_up_url"))
+        .and_then(|url| url.as_str())
+    {
+        data.insert(
+            "url".to_string(),
+            serde_json::Value::String(url.to_string()),
+        );
+    }
+
+    agent_client_protocol::Error::new(-32603, notification.msg.clone())
+        .data(serde_json::Value::Object(data))
+}
+
+fn send_status_message_update(
+    cx: &ConnectionTo<Client>,
+    session_id: &str,
+    notification: &SystemNotificationContent,
+) -> Result<(), agent_client_protocol::Error> {
+    if let Some(status) = status_message_from_system_notification(notification) {
+        cx.send_notification(GooseSessionNotification {
+            session_id: session_id.to_string(),
+            update: GooseSessionUpdate::StatusMessage(StatusMessageUpdate { status }),
+        })?;
+    }
+    Ok(())
+}
+
+fn status_message_from_system_notification(
+    notification: &SystemNotificationContent,
+) -> Option<StatusMessage> {
+    match notification.notification_type {
+        SystemNotificationType::InlineMessage => Some(StatusMessage::Notice {
+            message: notification.msg.clone(),
+        }),
+        SystemNotificationType::ThinkingMessage => Some(StatusMessage::Progress {
+            message: notification.msg.clone(),
+        }),
+        SystemNotificationType::CreditsExhausted => None,
+    }
+}
+
+fn send_elicitation_interaction_update(
+    cx: &ConnectionTo<Client>,
+    session_id: &str,
+    id: String,
+    state: InteractionState,
+    message: Option<String>,
+    requested_schema: Option<serde_json::Value>,
+    meta: Option<serde_json::Value>,
+) -> Result<(), agent_client_protocol::Error> {
+    cx.send_notification(GooseSessionNotification {
+        session_id: session_id.to_string(),
+        update: GooseSessionUpdate::InteractionUpdate(InteractionUpdate {
+            interaction: Interaction::Elicitation {
+                id,
+                state,
+                message,
+                requested_schema,
+            },
+            meta,
+        }),
+    })
+}
+
+fn interaction_update_meta(message_id: Option<&str>, created: i64) -> serde_json::Value {
+    serde_json::Value::Object(message_update_meta(message_id, created))
+}
+
+fn message_update_meta(message_id: Option<&str>, created: i64) -> Meta {
+    let mut goose = serde_json::Map::new();
+    goose.insert("created".to_string(), serde_json::json!(created));
+    if let Some(id) = message_id {
+        goose.insert("messageId".to_string(), serde_json::json!(id));
+    }
+
+    let mut meta = serde_json::Map::new();
+    meta.insert("goose".to_string(), serde_json::Value::Object(goose));
+    meta
+}
+
 fn extract_tool_call_update_meta(
     tool_response: &crate::conversation::message::ToolResponse,
 ) -> Option<Meta> {
@@ -2555,6 +2729,12 @@ impl GooseAcpAgent {
             None => SessionType::Acp,
         };
 
+        let current_mode = self
+            .load_config()
+            .ok()
+            .and_then(|config| config.get_goose_mode().ok())
+            .unwrap_or(GooseMode::Auto);
+
         let t0 = std::time::Instant::now();
         let goose_session = self
             .session_manager
@@ -2562,7 +2742,7 @@ impl GooseAcpAgent {
                 args.cwd.clone(),
                 "New Chat".to_string(),
                 session_type,
-                self.goose_mode,
+                current_mode,
             )
             .await
             .internal_err_ctx("Failed to create session")?;
@@ -2585,6 +2765,7 @@ impl GooseAcpAgent {
             .await
             .internal_err_ctx("Failed to reload session")?;
 
+        let session_mode = goose_session.goose_mode;
         let session_id_str = goose_session.id.clone();
         let sid = sid_short(&session_id_str);
         debug!(target: "perf", sid = %sid, ms = t0.elapsed().as_millis() as u64, "perf: new_session create_session");
@@ -2605,14 +2786,13 @@ impl GooseAcpAgent {
             .await
             .insert(session_id_str.clone(), acp_session);
 
-        let mode_state = build_mode_state(self.goose_mode)?;
+        let mode_state = build_mode_state(session_mode)?;
 
         let resolved = resolve_provider_and_model(&self.config_dir, &goose_session).await;
-        let initial_usage_update = resolved
-            .as_ref()
-            .ok()
-            .map(|(_, mc)| build_usage_update(&goose_session, mc.context_limit()));
         let acp_session_id = SessionId::new(session_id_str);
+        let initial_usage_updates = resolved.as_ref().ok().map(|(_, mc)| {
+            build_usage_updates(&acp_session_id, &goose_session, mc.context_limit())
+        });
         let (model_state, config_options, prebuilt_provider) = self
             .prepare_session_init_config(&resolved, &mode_state, &goose_session)
             .await;
@@ -2638,10 +2818,14 @@ impl GooseAcpAgent {
         if let Some(co) = config_options {
             response = response.config_options(co);
         }
-        if let Some(usage_update) = initial_usage_update {
+        if let Some(updates) = initial_usage_updates {
+            cx.send_notification(updates.custom)?;
+            // Legacy ACP notification — emitted alongside the custom one for
+            // backwards compatibility. Remove once all known clients have
+            // migrated to `_goose/unstable/session/update`.
             cx.send_notification(SessionNotification::new(
                 acp_session_id.clone(),
-                SessionUpdate::UsageUpdate(usage_update),
+                SessionUpdate::UsageUpdate(updates.legacy),
             ))?;
         }
         Self::send_available_commands_update(cx, &acp_session_id, &working_dir)?;
@@ -2777,252 +2961,7 @@ impl GooseAcpAgent {
         cx: &ConnectionTo<Client>,
         args: LoadSessionRequest,
     ) -> Result<LoadSessionResponse, agent_client_protocol::Error> {
-        debug!(?args, "load session request");
-        validate_absolute_cwd(&args.cwd)?;
-
-        let session_id = args.session_id.0.to_string();
-        let sid = sid_short(&session_id);
-        let t_start = std::time::Instant::now();
-
-        let t0 = std::time::Instant::now();
-        let goose_session = self
-            .session_manager
-            .get_session(&session_id, true)
-            .await
-            .map_err(|_| {
-                agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
-                    .data(format!("Session not found: {}", session_id))
-            })?;
-        debug!(target: "perf", sid = %sid, ms = t0.elapsed().as_millis() as u64, "perf: load_session get_session");
-        let loaded_mode = goose_session.goose_mode;
-
-        // ── REPLAY MESSAGES ──
-        // Stream user-visible messages back to the client so the chat view
-        // populates immediately, before the slow agent/provider/extension setup.
-        let messages = goose_session
-            .conversation
-            .as_ref()
-            .map(|c| c.messages().to_vec())
-            .unwrap_or_default();
-        debug!(
-            target: "perf",
-            sid = %sid,
-            messages = messages.len(),
-            "perf: load_session messages loaded"
-        );
-
-        let mut replay_tool_requests =
-            HashMap::<String, crate::conversation::message::ToolRequest>::new();
-
-        for message in &messages {
-            if !message.metadata.user_visible {
-                continue;
-            }
-
-            for content_item in &message.content {
-                match content_item {
-                    MessageContent::Text(text) => {
-                        let mut tc = TextContent::new(text.text.clone());
-                        if let Some(audience) = text.audience() {
-                            tc = tc.annotations(
-                                Annotations::new().audience(
-                                    audience
-                                        .iter()
-                                        .map(|r| match r {
-                                            Role::Assistant => {
-                                                agent_client_protocol::schema::Role::Assistant
-                                            }
-                                            Role::User => agent_client_protocol::schema::Role::User,
-                                        })
-                                        .collect::<Vec<_>>(),
-                                ),
-                            );
-                        }
-                        let chunk = ContentChunk::new(ContentBlock::Text(tc))
-                            .meta(replay_message_meta(message));
-                        let update = match message.role {
-                            Role::User => SessionUpdate::UserMessageChunk(chunk),
-                            Role::Assistant => SessionUpdate::AgentMessageChunk(chunk),
-                        };
-                        cx.send_notification(SessionNotification::new(
-                            args.session_id.clone(),
-                            update,
-                        ))?;
-                    }
-                    MessageContent::ToolRequest(tool_request) => {
-                        // Replay-only: emit the ToolCall notification and
-                        // stash the request for location extraction, but
-                        // don't require a full GooseAcpSession.
-                        replay_tool_requests.insert(tool_request.id.clone(), tool_request.clone());
-
-                        let pending_tool_call = pending_tool_call_from_request(tool_request);
-                        let mut meta = pending_tool_call.identity_meta;
-                        // If this tool request is the first of a chain whose
-                        // summary was persisted at completion time, attach the
-                        // chain summary to the initial ToolCall so the chain
-                        // header is correct on first paint after reload.
-                        if let Some(chain_summary) = tool_request.persisted_chain_summary() {
-                            meta = with_tool_chain_summary_meta(
-                                meta,
-                                &chain_summary.summary,
-                                chain_summary.count,
-                            );
-                        }
-                        let tool_call = pending_tool_call
-                            .tool_call
-                            .meta(merge_replay_message_meta(meta, message));
-
-                        cx.send_notification(SessionNotification::new(
-                            args.session_id.clone(),
-                            SessionUpdate::ToolCall(tool_call),
-                        ))?;
-                    }
-                    MessageContent::ToolResponse(tool_response) => {
-                        // Replay-only: emit the ToolCallUpdate notification,
-                        // using the stashed replay_tool_requests for location
-                        // extraction.
-                        let status = match &tool_response.tool_result {
-                            Ok(result) if result.is_error == Some(true) => ToolCallStatus::Failed,
-                            Ok(_) => ToolCallStatus::Completed,
-                            Err(_) => ToolCallStatus::Failed,
-                        };
-
-                        let mut fields = ToolCallUpdateFields::new().status(status);
-                        if let Some(raw_output) =
-                            extract_tool_raw_output(&tool_response.tool_result)
-                        {
-                            fields = fields.raw_output(raw_output);
-                        }
-                        if !tool_response
-                            .tool_result
-                            .as_ref()
-                            .is_ok_and(|r| r.is_acp_aware())
-                        {
-                            let content = build_tool_call_content(&tool_response.tool_result);
-                            fields = fields.content(content);
-
-                            let locations = extract_locations_from_meta(tool_response)
-                                .unwrap_or_else(|| {
-                                    if let Some(tool_request) =
-                                        replay_tool_requests.get(&tool_response.id)
-                                    {
-                                        extract_tool_locations(tool_request, tool_response)
-                                    } else {
-                                        Vec::new()
-                                    }
-                                });
-                            if !locations.is_empty() {
-                                fields = fields.locations(locations);
-                            }
-                        }
-
-                        let update =
-                            ToolCallUpdate::new(ToolCallId::new(tool_response.id.clone()), fields)
-                                .meta(merge_replay_message_meta(
-                                    extract_tool_call_update_meta(tool_response),
-                                    message,
-                                ));
-                        cx.send_notification(SessionNotification::new(
-                            args.session_id.clone(),
-                            SessionUpdate::ToolCallUpdate(update),
-                        ))?;
-                    }
-                    MessageContent::Thinking(thinking) => {
-                        cx.send_notification(SessionNotification::new(
-                            args.session_id.clone(),
-                            SessionUpdate::AgentThoughtChunk(
-                                ContentChunk::new(ContentBlock::Text(TextContent::new(
-                                    thinking.thinking.clone(),
-                                )))
-                                .meta(replay_message_meta(message)),
-                            ),
-                        ))?;
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Update working directory.
-        self.session_manager
-            .update(&session_id)
-            .working_dir(args.cwd.clone())
-            .apply()
-            .await
-            .internal_err_ctx("Failed to update session working directory")?;
-        let goose_session = self
-            .session_manager
-            .get_session(&session_id, false)
-            .await
-            .internal_err_ctx("Failed to reload session")?;
-
-        // Register the session with a Loading handle.
-        let (agent_tx, agent_rx) = tokio::sync::watch::channel::<AgentSetupSignal>(None);
-
-        let acp_session = GooseAcpSession {
-            agent: AgentHandle::Loading(agent_rx),
-            tool_requests: replay_tool_requests,
-            chain_membership: HashMap::new(),
-            responded_tool_ids: HashSet::new(),
-            summarized_chains: HashSet::new(),
-            cancel_token: None,
-            pending_working_dir: None,
-        };
-        self.sessions
-            .lock()
-            .await
-            .insert(session_id.clone(), acp_session);
-
-        let mode_state = build_mode_state(loaded_mode)?;
-
-        let resolved = resolve_provider_and_model(&self.config_dir, &goose_session).await;
-        let initial_usage_update = resolved
-            .as_ref()
-            .ok()
-            .map(|(_, mc)| build_usage_update(&goose_session, mc.context_limit()))
-            .or_else(|| {
-                goose_session
-                    .model_config
-                    .as_ref()
-                    .map(|mc| build_usage_update(&goose_session, mc.context_limit()))
-            });
-        let (model_state, config_options, prebuilt_provider) = self
-            .prepare_session_init_config(&resolved, &mode_state, &goose_session)
-            .await;
-
-        self.spawn_agent_setup(
-            cx,
-            agent_tx,
-            AgentSetupRequest {
-                session_id: args.session_id.clone(),
-                goose_session,
-                mcp_servers: args.mcp_servers,
-                resolved_provider: None,
-                prebuilt_provider,
-            },
-        );
-
-        let mut response = LoadSessionResponse::new().modes(mode_state);
-        if let Some(ms) = model_state {
-            response = response.models(ms);
-        }
-        if let Some(co) = config_options {
-            response = response.config_options(co);
-        }
-        if let Some(usage_update) = initial_usage_update {
-            cx.send_notification(SessionNotification::new(
-                args.session_id.clone(),
-                SessionUpdate::UsageUpdate(usage_update),
-            ))?;
-        }
-        Self::send_available_commands_update(cx, &args.session_id, &args.cwd)?;
-        debug!(
-            target: "perf",
-            sid = %sid,
-            ms = t_start.elapsed().as_millis() as u64,
-            "perf: load_session done (agent setup continues in background)"
-        );
-        Ok(response)
+        self.handle_load_session(cx, args).await
     }
 
     async fn on_prompt(
@@ -3122,6 +3061,11 @@ impl GooseAcpAgent {
                     })?;
 
                     for content_item in &message.content {
+                        if let Some(error) = prompt_error_from_message_content(content_item) {
+                            session.cancel_token = None;
+                            return Err(error);
+                        }
+
                         match content_item {
                             MessageContent::ToolRequest(tr) => {
                                 if let Some(msg_id) = stored_message_id.as_deref() {
@@ -3154,6 +3098,7 @@ impl GooseAcpAgent {
                             &args.session_id,
                             &session_id,
                             stored_message_id.as_deref(),
+                            message.created,
                             &agent,
                             session,
                             cx,
@@ -3190,11 +3135,18 @@ impl GooseAcpAgent {
             .provider()
             .await
             .internal_err_ctx("Failed to get provider")?;
-        let usage_update =
-            build_usage_update(&session, provider.get_model_config().context_limit());
+        let updates = build_usage_updates(
+            &args.session_id,
+            &session,
+            provider.get_model_config().context_limit(),
+        );
+        cx.send_notification(updates.custom)?;
+        // Legacy ACP notification — emitted alongside the custom one for
+        // backwards compatibility. Remove once all known clients have
+        // migrated to `_goose/unstable/session/update`.
         cx.send_notification(SessionNotification::new(
             args.session_id.clone(),
-            SessionUpdate::UsageUpdate(usage_update),
+            SessionUpdate::UsageUpdate(updates.legacy),
         ))?;
 
         debug!(
@@ -3237,6 +3189,45 @@ impl GooseAcpAgent {
         }
 
         Ok(())
+    }
+
+    async fn on_elicitation_respond(
+        &self,
+        cx: &ConnectionTo<Client>,
+        req: ElicitationRespondRequest,
+    ) -> Result<EmptyResponse, agent_client_protocol::Error> {
+        ActionRequiredManager::global()
+            .submit_response(req.elicitation_id.clone(), req.user_data.clone())
+            .await
+            .invalid_params_err_ctx("Failed to submit elicitation response")?;
+
+        let response_message = Message::user()
+            .with_generated_id()
+            .with_content(MessageContent::action_required_elicitation_response(
+                req.elicitation_id.clone(),
+                req.user_data,
+            ))
+            .agent_only();
+
+        self.session_manager
+            .add_message(&req.session_id, &response_message)
+            .await
+            .internal_err_ctx("Failed to persist elicitation response")?;
+
+        send_elicitation_interaction_update(
+            cx,
+            &req.session_id,
+            req.elicitation_id,
+            InteractionState::Submitted,
+            None,
+            None,
+            Some(interaction_update_meta(
+                response_message.id.as_deref(),
+                response_message.created,
+            )),
+        )?;
+
+        Ok(EmptyResponse {})
     }
 
     async fn on_set_model(
@@ -3484,10 +3475,14 @@ impl GooseAcpAgent {
             .into_iter()
             .map(|s| {
                 let meta = session_meta(&s);
-                SessionInfo::new(SessionId::new(s.id), s.working_dir)
-                    .title(s.name)
+                let title = display_title(&s);
+                let mut info = SessionInfo::new(SessionId::new(s.id), s.working_dir)
                     .updated_at(s.updated_at.to_rfc3339())
-                    .meta(meta)
+                    .meta(meta);
+                if let Some(t) = title {
+                    info = info.title(t);
+                }
+                info
             })
             .collect();
         let next_cursor = page
@@ -3506,9 +3501,20 @@ impl GooseAcpAgent {
         validate_absolute_cwd(&args.cwd)?;
         let source_session_id = &*args.session_id.0;
 
+        let source = self
+            .session_manager
+            .get_session(source_session_id, false)
+            .await
+            .internal_err()?;
+        let fork_name = if source.name.trim().is_empty() {
+            "(copy)".to_string()
+        } else {
+            format!("{} (copy)", source.name)
+        };
+
         let new_session = self
             .session_manager
-            .copy_session(source_session_id, "Fork".to_string())
+            .copy_session(source_session_id, fork_name)
             .await
             .internal_err()?;
         let new_session_id = new_session.id.clone();
@@ -3543,7 +3549,7 @@ impl GooseAcpAgent {
             .await
             .insert(new_session_id.clone(), acp_session);
 
-        let mode_state = build_mode_state(self.goose_mode)?;
+        let mode_state = build_mode_state(goose_session.goose_mode)?;
         let resolved = resolve_provider_and_model(&self.config_dir, &goose_session).await;
         let (model_state, config_options, prebuilt_provider) = self
             .prepare_session_init_config(&resolved, &mode_state, &goose_session)
@@ -4401,6 +4407,57 @@ print(\"hello, world\")
     }
 
     #[test]
+    fn test_message_update_meta_includes_created_and_message_id() {
+        let meta = message_update_meta(Some("msg_live"), 1_700_000_000);
+
+        assert_eq!(
+            meta.get("goose"),
+            Some(&serde_json::json!({
+                "created": 1_700_000_000,
+                "messageId": "msg_live",
+            })),
+        );
+    }
+
+    #[test]
+    fn test_credits_exhausted_system_notification_maps_to_prompt_error() {
+        let content = MessageContent::SystemNotification(SystemNotificationContent {
+            notification_type: SystemNotificationType::CreditsExhausted,
+            msg: "Please add credits to your account, then resend your message to continue."
+                .to_string(),
+            data: Some(serde_json::json!({
+                "top_up_url": "https://router.tetrate.ai/billing"
+            })),
+        });
+
+        let error = prompt_error_from_message_content(&content).expect("expected prompt error");
+        let value = serde_json::to_value(error).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "code": -32603,
+                "message": "Please add credits to your account, then resend your message to continue.",
+                "data": {
+                    "reason": "credits_exhausted",
+                    "url": "https://router.tetrate.ai/billing"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_non_credit_system_notification_does_not_map_to_prompt_error() {
+        let content = MessageContent::SystemNotification(SystemNotificationContent {
+            notification_type: SystemNotificationType::InlineMessage,
+            msg: "Compaction complete".to_string(),
+            data: None,
+        });
+
+        assert!(prompt_error_from_message_content(&content).is_none());
+    }
+
+    #[test]
     fn test_merge_replay_message_meta_omits_message_id_when_none() {
         let message = Message::new(Role::Assistant, 1_700_000_000, vec![]);
 
@@ -4510,9 +4567,17 @@ print(\"hello, world\")
     #[test]
     fn test_build_usage_update_clamps_negative_used_to_zero() {
         let session = make_session_with_usage(Some(-7), Some(0), Some(0), None, None, None);
-        let usage = build_usage_update(&session, 258_000);
+        let updates =
+            build_usage_updates(&SessionId::new("session-1".to_string()), &session, 258_000);
+        assert_eq!(updates.custom.session_id, "session-1");
+        let usage = match updates.custom.update {
+            GooseSessionUpdate::UsageUpdate(usage) => usage,
+            other => panic!("expected usage update, got {other:?}"),
+        };
         assert_eq!(usage.used, 0);
-        assert_eq!(usage.size, 258_000);
+        assert_eq!(usage.context_limit, 258_000);
+        assert_eq!(updates.legacy.used, 0);
+        assert_eq!(updates.legacy.size, 258_000);
     }
 
     #[test_case(
