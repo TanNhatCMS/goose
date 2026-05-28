@@ -58,7 +58,7 @@ use agent_client_protocol::{
 use anyhow::Result;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use fs_err as fs;
-use futures::future::{BoxFuture, Either};
+use futures::future::BoxFuture;
 use futures::stream::{self, StreamExt};
 use futures::FutureExt;
 use rmcp::model::{
@@ -83,6 +83,7 @@ mod dictation;
 mod dispatch;
 mod extensions;
 mod load_session;
+mod new_session;
 mod onboarding;
 mod providers;
 mod resources;
@@ -167,7 +168,7 @@ async fn ensure_refresh_identity_current(
 /// The ACP session ID maps directly to a `sessions` row. The `sessions` HashMap
 /// below is keyed by session ID.
 struct GooseAcpSession {
-    agent: AgentHandle,
+    agent: Arc<Agent>,
     tool_requests: HashMap<String, crate::conversation::message::ToolRequest>,
     /// For each tool_call_id that belongs to a multi-tool chain (run of
     /// consecutive ToolRequest blocks within one assistant message), the chain
@@ -182,9 +183,6 @@ struct GooseAcpSession {
     /// Idempotence guard so we summarize each chain at most once.
     summarized_chains: HashSet<String>,
     cancel_token: Option<CancellationToken>,
-    /// Working directory set while the agent was still loading.
-    /// Applied once the agent becomes ready.
-    pending_working_dir: Option<std::path::PathBuf>,
 }
 
 /// A run of consecutive ToolRequest blocks within one assistant message,
@@ -199,37 +197,13 @@ struct ToolChain {
     message_id: String,
 }
 
-/// Progress stages signalled by the background agent setup task via the watch
-/// channel.  `ProviderReady` fires as soon as the provider (and goose-mode)
-/// are initialized — before extensions finish loading.  `FullyReady` fires
-/// once every extension has been loaded (or failed).
-#[derive(Clone)]
-enum AgentSetupProgress {
-    /// Provider is initialized; extensions are still loading in the background.
-    ProviderReady(Arc<Agent>),
-    /// Provider *and* all extensions are initialized.
-    FullyReady(Arc<Agent>),
-}
-
-type AgentSetupSignal = Option<Result<AgentSetupProgress, String>>;
-
-/// The agent may still be initializing in the background (extension loading,
-/// provider setup).  Callers that need the live agent (e.g. `on_prompt`) await
-/// the handle; callers that only need the session metadata can proceed without it.
-enum AgentHandle {
-    Ready(Arc<Agent>),
-    Loading(tokio::sync::watch::Receiver<AgentSetupSignal>),
-}
-
-struct AgentSetupRequest {
-    session_id: SessionId,
-    goose_session: Session,
-    mcp_servers: Vec<McpServer>,
-    /// Pre-resolved provider name + model config (from config, no network).
-    /// When present the spawn skips re-deriving these from config.
-    resolved_provider: Option<(String, crate::model::ModelConfig)>,
-    /// Pre-instantiated provider reused from synchronous session initialization.
+struct SessionInitState {
+    mode_state: SessionModeState,
+    resolved_provider: Result<(String, crate::model::ModelConfig), String>,
+    model_state: Option<SessionModelState>,
+    config_options: Option<Vec<SessionConfigOption>>,
     prebuilt_provider: Option<Arc<dyn Provider>>,
+    usage_updates: Option<UsageUpdates>,
 }
 
 pub struct GooseAcpAgentOptions {
@@ -411,6 +385,12 @@ fn session_meta(session: &Session) -> serde_json::Map<String, serde_json::Value>
         );
     }
     meta
+}
+
+fn meta_string(meta: Option<&Meta>, key: &str) -> Option<String> {
+    meta.and_then(|m| m.get(key))
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
 }
 
 fn spawn_session_name_update_notifier(
@@ -1022,6 +1002,52 @@ fn session_provider_selection(session: &Session) -> &str {
         .unwrap_or(DEFAULT_PROVIDER_ID)
 }
 
+async fn provider_default_model_config(
+    provider_name: &str,
+) -> Result<crate::model::ModelConfig, String> {
+    let entry = crate::providers::get_from_registry(provider_name)
+        .await
+        .map_err(|e| e.to_string())?;
+    let default_model = &entry.metadata().default_model;
+    crate::model::ModelConfig::new(default_model)
+        .map_err(|e| e.to_string())
+        .map(|model_config| model_config.with_canonical_limits(provider_name))
+}
+
+fn global_model_config(
+    config: &Config,
+    provider_name: &str,
+) -> Result<crate::model::ModelConfig, String> {
+    let model_id = config.get_goose_model().map_err(|e| e.to_string())?;
+    crate::model::ModelConfig::new(&model_id)
+        .map_err(|e| e.to_string())
+        .map(|model_config| model_config.with_canonical_limits(provider_name))
+}
+
+async fn resolve_provider_and_model_config(
+    config: &Config,
+    provider_selection: Option<&str>,
+    saved_model_config: Option<&crate::model::ModelConfig>,
+) -> Result<(String, crate::model::ModelConfig), String> {
+    if let Some(provider_name) =
+        provider_selection.filter(|provider| *provider != DEFAULT_PROVIDER_ID)
+    {
+        let model_config = match saved_model_config {
+            Some(model_config) => model_config.clone(),
+            None => provider_default_model_config(provider_name).await?,
+        };
+        return Ok((provider_name.to_string(), model_config));
+    }
+    let provider_name = config
+        .get_goose_provider()
+        .map_err(|_| "Missing provider".to_string())?;
+    let model_config = match saved_model_config {
+        Some(model_config) => model_config.clone(),
+        None => global_model_config(config, &provider_name)?,
+    };
+    Ok((provider_name, model_config))
+}
+
 /// Resolve the provider name and model config for a session from an
 /// already-loaded `Config`.
 async fn resolve_provider_and_model_from_config(
@@ -1033,31 +1059,14 @@ async fn resolve_provider_and_model_from_config(
         .provider_name
         .as_deref()
         .filter(|p| *p != DEFAULT_PROVIDER_ID);
-    let provider_name = provider_override
-        .map(ToOwned::to_owned)
-        .or_else(|| global_provider.clone())
-        .ok_or_else(|| "Missing provider".to_string())?;
-    let explicitly_switched =
-        provider_override.is_some() && provider_override != global_provider.as_deref();
-    let model_config = match &goose_session.model_config {
-        Some(mc) => mc.clone(),
-        None if explicitly_switched => {
-            let entry = crate::providers::get_from_registry(&provider_name)
-                .await
-                .map_err(|e| e.to_string())?;
-            let default_model = &entry.metadata().default_model;
-            crate::model::ModelConfig::new(default_model)
-                .map_err(|e| e.to_string())?
-                .with_canonical_limits(&provider_name)
-        }
-        None => {
-            let model_id = config.get_goose_model().map_err(|e| e.to_string())?;
-            crate::model::ModelConfig::new(&model_id)
-                .map_err(|e| e.to_string())?
-                .with_canonical_limits(&provider_name)
-        }
-    };
-    Ok((provider_name, model_config))
+    let provider_selection = provider_override
+        .filter(|provider_name| Some(*provider_name) != global_provider.as_deref());
+    resolve_provider_and_model_config(
+        config,
+        provider_selection,
+        goose_session.model_config.as_ref(),
+    )
+    .await
 }
 
 fn with_preserved_session_request_params(
@@ -1198,20 +1207,16 @@ struct UsageUpdates {
     legacy: UsageUpdate,
 }
 
-fn build_usage_updates(
-    session_id: &SessionId,
-    session: &Session,
-    context_limit: usize,
-) -> UsageUpdates {
+fn build_usage_updates(session: &Session) -> Option<UsageUpdates> {
     let used = session.total_tokens.unwrap_or(0).max(0) as u64;
-    let ctx_limit = context_limit as u64;
+    let ctx_limit = session.model_config.as_ref()?.context_limit() as u64;
     let accumulated_input_tokens =
         to_nonnegative_u64(session.accumulated_input_tokens).unwrap_or(0);
     let accumulated_output_tokens =
         to_nonnegative_u64(session.accumulated_output_tokens).unwrap_or(0);
-    UsageUpdates {
+    Some(UsageUpdates {
         custom: GooseSessionNotification {
-            session_id: session_id.0.to_string(),
+            session_id: session.id.clone(),
             update: GooseSessionUpdate::UsageUpdate(SessionUsageUpdate {
                 used,
                 context_limit: ctx_limit,
@@ -1221,7 +1226,7 @@ fn build_usage_updates(
             }),
         },
         legacy: UsageUpdate::new(used, ctx_limit),
-    }
+    })
 }
 
 fn validate_absolute_cwd(cwd: &Path) -> Result<(), agent_client_protocol::Error> {
@@ -1350,145 +1355,21 @@ impl GooseAcpAgent {
             return (None, None, None);
         };
 
-        let mut prebuilt_provider = None;
-        if should_refresh_inventory_for_session_init(&inventory) {
-            match self.load_config() {
-                Ok(config) => {
-                    let ext_state = EnabledExtensionsState::extensions_or_default(
-                        Some(&goose_session.extension_data),
-                        &config,
-                    );
-                    Config::global().invalidate_secrets_cache();
-                    match self
-                        .create_provider(
-                            provider_name,
-                            model_config.clone(),
-                            ext_state,
-                            Some(goose_session.working_dir.clone()),
-                        )
-                        .await
-                    {
-                        Ok(provider) => {
-                            let provider_id = provider_name.clone();
-                            prebuilt_provider = Some(provider.clone());
-                            match self
-                                .provider_inventory
-                                .plan_refresh_jobs(std::slice::from_ref(&provider_id))
-                                .await
-                            {
-                                Ok(plan)
-                                    if plan
-                                        .started
-                                        .iter()
-                                        .any(|job| job.provider_id == provider_id) =>
-                                {
-                                    let refresh_job = plan
-                                        .started
-                                        .into_iter()
-                                        .find(|job| job.provider_id == provider_id);
-                                    if let Some(refresh_job) = refresh_job {
-                                        let mut refresh_guard = self
-                                            .provider_inventory
-                                            .refresh_guard(&refresh_job.identity);
-                                        let fetch_result: Result<Vec<String>> =
-                                            match ensure_refresh_identity_current(
-                                                &provider_id,
-                                                &refresh_job.identity,
-                                            )
-                                            .await
-                                            {
-                                                Ok(()) => match AssertUnwindSafe(
-                                                    provider.fetch_recommended_models(),
-                                                )
-                                                .catch_unwind()
-                                                .await
-                                                {
-                                                    Ok(Ok(models)) => Ok(models),
-                                                    Ok(Err(error)) => {
-                                                        Err(anyhow::anyhow!(error.to_string()))
-                                                    }
-                                                    Err(_) => Err(anyhow::anyhow!(
-                                                        "provider inventory refresh task panicked"
-                                                    )),
-                                                },
-                                                Err(error) => Err(error),
-                                            };
-                                        match fetch_result {
-                                            Ok(models) => {
-                                                if let Err(error) = self
-                                                    .provider_inventory
-                                                    .store_refreshed_models_for_identity(
-                                                        &refresh_job.identity,
-                                                        &models,
-                                                    )
-                                                    .await
-                                                {
-                                                    warn!(
-                                                        provider = %provider_id,
-                                                        error = %error,
-                                                        "failed to store refreshed provider inventory during session init"
-                                                    );
-                                                } else {
-                                                    refresh_guard.complete();
-                                                }
-                                            }
-                                            Err(error) => {
-                                                let error_message = error.to_string();
-                                                if let Err(store_error) = self
-                                                    .provider_inventory
-                                                    .store_refresh_error_for_identity(
-                                                        &refresh_job.identity,
-                                                        error_message.clone(),
-                                                    )
-                                                    .await
-                                                {
-                                                    warn!(
-                                                        provider = %provider_id,
-                                                        error = %store_error,
-                                                        "failed to store provider inventory refresh error during session init"
-                                                    );
-                                                } else {
-                                                    refresh_guard.complete();
-                                                }
-                                                warn!(
-                                                    provider = %provider_id,
-                                                    error = %error_message,
-                                                    "provider inventory refresh failed during session init"
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                                Ok(_) => {}
-                                Err(error) => warn!(
-                                    provider = %provider_id,
-                                    error = %error,
-                                    "failed to plan provider inventory refresh during session init"
-                                ),
-                            }
-
-                            if let Ok(Some(refreshed_inventory)) = self
-                                .provider_inventory
-                                .entry_for_provider(provider_name)
-                                .await
-                            {
-                                inventory = refreshed_inventory;
-                            }
-                        }
-                        Err(error) => warn!(
-                            provider = %provider_name,
-                            error = %error,
-                            "failed to initialize provider during synchronous inventory refresh"
-                        ),
-                    }
+        let prebuilt_provider = if should_refresh_inventory_for_session_init(&inventory) {
+            match self
+                .build_session_provider(provider_name, model_config, goose_session)
+                .await
+            {
+                Some(provider) => {
+                    self.refresh_inventory_with_provider(provider_name, &provider, &mut inventory)
+                        .await;
+                    Some(provider)
                 }
-                Err(error) => warn!(
-                    provider = %provider_name,
-                    error = %error,
-                    "failed to load config during synchronous inventory refresh"
-                ),
+                None => None,
             }
-        }
+        } else {
+            None
+        };
 
         let (model_state, config_options) = build_eager_config_from_inventory(
             provider_name,
@@ -1501,252 +1382,173 @@ impl GooseAcpAgent {
         (Some(model_state), Some(config_options), prebuilt_provider)
     }
 
-    fn spawn_agent_setup(
+    async fn build_session_provider(
         &self,
-        cx: &ConnectionTo<Client>,
-        agent_tx: tokio::sync::watch::Sender<AgentSetupSignal>,
-        req: AgentSetupRequest,
-    ) {
-        let AgentSetupRequest {
-            session_id,
-            goose_session,
-            mcp_servers,
-            resolved_provider,
-            prebuilt_provider,
-        } = req;
-
-        let goose_mode = goose_session.goose_mode;
-        let setup_session_id = goose_session.id.clone();
-        let agent_session_id = SessionId::new(setup_session_id.clone());
-        let sid = sid_short(session_id.0.as_ref());
-
-        let cx = cx.clone();
-        let sessions = Arc::clone(&self.sessions);
-        let session_manager = Arc::clone(&self.session_manager);
-        let permission_manager = Arc::clone(&self.permission_manager);
-        let config_dir = self.config_dir.clone();
-        let builtins = self.builtins.clone();
-        let client_fs_capabilities = self
-            .client_fs_capabilities
-            .get()
-            .cloned()
-            .unwrap_or_default();
-        let client_terminal = self.client_terminal.get().copied().unwrap_or(false);
-        let client_mcp_host_info = self.client_mcp_host_info.get().cloned();
-        let use_login_shell_path = self.use_login_shell_path.get().copied().unwrap_or(false);
-        let provider_factory = Arc::clone(&self.provider_factory);
-        let disable_session_naming = self.disable_session_naming;
-        let goose_platform = self.goose_platform.clone();
-
-        tokio::spawn(async move {
-            let t_setup = std::time::Instant::now();
-            debug!(target: "perf", sid = %sid, "perf: agent_setup start (background)");
-            // Shared config — read once, used by both phases.
-            let config = match Config::new(config_dir.join(CONFIG_YAML_NAME), "goose") {
-                Ok(c) => c,
-                Err(e) => {
-                    let msg = e.to_string();
-                    error!(error = %msg, "Background agent setup failed (config)");
-                    let _ = agent_tx.send(Some(Err(msg)));
-                    return;
-                }
-            };
-
-            let session_name_update_tx =
-                (!disable_session_naming).then(|| spawn_session_name_update_notifier(cx.clone()));
-
-            // ── Phase 1: create agent + init provider (fast, ~55ms) ──────
-            let phase1: Result<Arc<Agent>, String> = async {
-                let agent = Arc::new(Agent::with_config(
-                    AgentConfig::new(
-                        session_manager,
-                        permission_manager,
-                        None,
-                        goose_mode,
-                        disable_session_naming,
-                        goose_platform,
-                    )
-                    .with_mcp_host_info(client_mcp_host_info)
-                    .with_session_name_update_tx(session_name_update_tx)
-                    .with_use_login_shell_path(use_login_shell_path),
-                ));
-
-                // Init provider — reuse the pre-resolved name + model when
-                // available (already computed in on_new_session), otherwise
-                // fall back to reading config (e.g. load_session path).
-                let (provider_name, model_config) = match resolved_provider {
-                    Some(resolved) => resolved,
-                    None => resolve_provider_and_model_from_config(&config, &goose_session).await?,
-                };
-                let ext_state = EnabledExtensionsState::extensions_or_default(
-                    Some(&goose_session.extension_data),
-                    &config,
+        provider_name: &str,
+        model_config: &crate::model::ModelConfig,
+        goose_session: &Session,
+    ) -> Option<Arc<dyn Provider>> {
+        let config = match self.load_config() {
+            Ok(config) => config,
+            Err(error) => {
+                warn!(
+                    provider = %provider_name,
+                    error = %error,
+                    "failed to load config during synchronous inventory refresh"
                 );
-                let provider = match prebuilt_provider {
-                    Some(provider) => provider,
-                    None => provider_factory(
-                        provider_name.to_string(),
-                        model_config,
-                        ext_state,
-                        Some(goose_session.working_dir.clone()),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?,
-                };
-                agent
-                    .update_provider(provider.clone(), &goose_session.id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                agent
-                    .update_goose_mode(goose_mode, &setup_session_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                Ok(agent)
+                return None;
             }
-            .await;
+        };
 
-            let agent = match phase1 {
-                Ok(agent) => {
-                    // Signal ProviderReady — unblocks setProvider / update_provider
-                    // while extensions continue loading below.
-                    let _ =
-                        agent_tx.send(Some(Ok(AgentSetupProgress::ProviderReady(agent.clone()))));
-                    debug!(target: "perf", sid = %sid, ms = t_setup.elapsed().as_millis() as u64, "perf: agent_setup provider_ready (signalled)");
-                    agent
-                }
-                Err(e) => {
-                    error!(error = %e, "Background agent setup failed (provider init)");
-                    debug!(target: "perf", sid = %sid, ms = t_setup.elapsed().as_millis() as u64, "perf: agent_setup failed (provider)");
-                    let _ = agent_tx.send(Some(Err(e)));
-                    return;
-                }
-            };
+        let ext_state = EnabledExtensionsState::extensions_or_default(
+            Some(&goose_session.extension_data),
+            &config,
+        );
+        Config::global().invalidate_secrets_cache();
+        match self
+            .create_provider(
+                provider_name,
+                model_config.clone(),
+                ext_state,
+                Some(goose_session.working_dir.clone()),
+            )
+            .await
+        {
+            Ok(provider) => Some(provider),
+            Err(error) => {
+                warn!(
+                    provider = %provider_name,
+                    error = %error,
+                    "failed to initialize provider during synchronous inventory refresh"
+                );
+                None
+            }
+        }
+    }
 
-            // ── Phase 2: load extensions (slow, may take seconds) ────────
-            let phase2: Result<(), String> = async {
-                let mut extensions = get_enabled_extensions_with_config(&config);
-                extensions.extend(builtins.iter().map(|b| builtin_to_extension_config(b)));
-
-                let acp_developer = if (client_fs_capabilities.read_text_file
-                    || client_fs_capabilities.write_text_file
-                    || client_terminal)
-                    && extensions.iter().any(|e| e.name() == "developer")
-                {
-                    let context = agent.extension_manager.get_context().clone();
-                    match DeveloperClient::new(context) {
-                        Ok(dev_client) => {
-                            let client: Arc<dyn McpClientTrait> = Arc::new(AcpTools {
-                                inner: Arc::new(dev_client),
-                                cx: cx.clone(),
-                                session_id: session_id.clone(),
-                                fs_read: client_fs_capabilities.read_text_file,
-                                fs_write: client_fs_capabilities.write_text_file,
-                                terminal: client_terminal,
-                            });
-                            let dev_ext = extensions.iter().find(|e| e.name() == "developer");
-                            let available_tools = dev_ext
-                                .and_then(|e| match e {
-                                    ExtensionConfig::Platform {
-                                        available_tools, ..
-                                    } => Some(available_tools.clone()),
-                                    _ => None,
-                                })
-                                .unwrap_or_default();
-                            let def = &PLATFORM_EXTENSIONS["developer"];
-                            let config = ExtensionConfig::Platform {
-                                name: def.name.into(),
-                                description: def.description.into(),
-                                display_name: Some(def.display_name.into()),
-                                bundled: Some(true),
-                                available_tools,
-                            };
-                            Some((client, config))
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "Failed to create developer client");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                let skip_developer = acp_developer.is_some();
-                let sid_str = Some(agent_session_id.0.to_string());
-
-                if skip_developer {
-                    extensions.retain(|ext| ext.name() != "developer");
-                }
-
-                let ext_manager = &agent.extension_manager;
-                let working_dir = goose_session.working_dir.clone();
-                let extension_futures = extensions
+    async fn refresh_inventory_with_provider(
+        &self,
+        provider_name: &str,
+        provider: &Arc<dyn Provider>,
+        inventory: &mut ProviderInventoryEntry,
+    ) {
+        let provider_id = provider_name.to_string();
+        match self
+            .provider_inventory
+            .plan_refresh_jobs(std::slice::from_ref(&provider_id))
+            .await
+        {
+            Ok(plan)
+                if plan
+                    .started
+                    .iter()
+                    .any(|job| job.provider_id == provider_id) =>
+            {
+                let refresh_job = plan
+                    .started
                     .into_iter()
-                    .map(|ext| {
-                        let ext_manager = Arc::clone(ext_manager);
-                        let sid_inner = sid_str.clone();
-                        let working_dir = working_dir.clone();
-                        async move {
-                            let name = ext.name().to_string();
-                            if let Err(e) = ext_manager
-                                .add_extension(ext, Some(working_dir), None, sid_inner.as_deref())
+                    .find(|job| job.provider_id == provider_id);
+                if let Some(refresh_job) = refresh_job {
+                    let mut refresh_guard =
+                        self.provider_inventory.refresh_guard(&refresh_job.identity);
+                    let fetch_result: Result<Vec<String>> =
+                        match ensure_refresh_identity_current(&provider_id, &refresh_job.identity)
+                            .await
+                        {
+                            Ok(()) => {
+                                match AssertUnwindSafe(provider.fetch_recommended_models())
+                                    .catch_unwind()
+                                    .await
+                                {
+                                    Ok(Ok(models)) => Ok(models),
+                                    Ok(Err(error)) => Err(anyhow::anyhow!(error.to_string())),
+                                    Err(_) => Err(anyhow::anyhow!(
+                                        "provider inventory refresh task panicked"
+                                    )),
+                                }
+                            }
+                            Err(error) => Err(error),
+                        };
+                    match fetch_result {
+                        Ok(models) => {
+                            if let Err(error) = self
+                                .provider_inventory
+                                .store_refreshed_models_for_identity(&refresh_job.identity, &models)
                                 .await
                             {
-                                warn!(extension = %name, error = %e, "extension load failed");
+                                warn!(
+                                    provider = %provider_id,
+                                    error = %error,
+                                    "failed to store refreshed provider inventory during session init"
+                                );
+                            } else {
+                                refresh_guard.complete();
                             }
                         }
-                    })
-                    .collect::<Vec<_>>();
-                futures::future::join_all(extension_futures).await;
-
-                if let Some((client, config)) = acp_developer {
-                    let info = client.get_info().cloned();
-                    agent
-                        .extension_manager
-                        .add_client("developer".into(), config, client, info, None)
-                        .await;
+                        Err(error) => {
+                            let error_message = error.to_string();
+                            if let Err(store_error) = self
+                                .provider_inventory
+                                .store_refresh_error_for_identity(
+                                    &refresh_job.identity,
+                                    error_message.clone(),
+                                )
+                                .await
+                            {
+                                warn!(
+                                    provider = %provider_id,
+                                    error = %store_error,
+                                    "failed to store provider inventory refresh error during session init"
+                                );
+                            } else {
+                                refresh_guard.complete();
+                            }
+                            warn!(
+                                provider = %provider_id,
+                                error = %error_message,
+                                "provider inventory refresh failed during session init"
+                            );
+                        }
+                    }
                 }
-
-                GooseAcpAgent::add_mcp_extensions(&agent, mcp_servers, &setup_session_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                Ok(())
             }
+            Ok(_) => {}
+            Err(error) => warn!(
+                provider = %provider_id,
+                error = %error,
+                "failed to plan provider inventory refresh during session init"
+            ),
+        }
+
+        if let Ok(Some(refreshed_inventory)) = self
+            .provider_inventory
+            .entry_for_provider(provider_name)
+            .await
+        {
+            *inventory = refreshed_inventory;
+        }
+    }
+
+    async fn prepare_session_init_state(
+        &self,
+        goose_session: &Session,
+    ) -> Result<SessionInitState, agent_client_protocol::Error> {
+        let mode_state = build_mode_state(goose_session.goose_mode)?;
+        // TODO: Lifei need to remove the call below, because it was called outside. but check load_session, and fork_session too
+        let resolved_provider = resolve_provider_and_model(&self.config_dir, goose_session).await;
+        let usage_updates = build_usage_updates(goose_session);
+        let (model_state, config_options, prebuilt_provider) = self
+            .prepare_session_init_config(&resolved_provider, &mode_state, goose_session)
             .await;
 
-            if let Err(e) = &phase2 {
-                // Extension failures are non-fatal — individual failures are
-                // already logged as warnings.  Log the top-level error but
-                // don't block the session: the provider is ready and the agent
-                // is usable.
-                error!(error = %e, "Background agent setup: extension phase had errors");
-            }
-
-            // Promote the handle to Ready and apply any working directory that
-            // was set while we were loading — regardless of phase-2 outcome,
-            // since the agent (with its provider) is fully usable.
-            {
-                let mut locked = sessions.lock().await;
-                if let Some(session) = locked.get_mut(session_id.0.as_ref()) {
-                    if let Some(dir) = session.pending_working_dir.take() {
-                        agent.extension_manager.update_working_dir(&dir).await;
-                    }
-                    session.agent = AgentHandle::Ready(agent.clone());
-                }
-            }
-
-            let _ = agent_tx.send(Some(Ok(AgentSetupProgress::FullyReady(agent))));
-            debug!(
-                target: "perf",
-                sid = %sid,
-                ms = t_setup.elapsed().as_millis() as u64,
-                "perf: agent_setup done{}",
-                if phase2.is_err() { " (with extension errors)" } else { "" }
-            );
-        });
+        Ok(SessionInitState {
+            mode_state,
+            resolved_provider,
+            model_state,
+            config_options,
+            prebuilt_provider,
+            usage_updates,
+        })
     }
 
     pub async fn has_session(&self, session_id: &str) -> bool {
@@ -1948,10 +1750,7 @@ impl GooseAcpAgent {
         }
 
         if let Ok(tool_call) = &tool_request.tool_call {
-            let agent = match &session.agent {
-                AgentHandle::Ready(a) => a.clone(),
-                AgentHandle::Loading(_) => return Ok(()),
-            };
+            let agent = session.agent.clone();
             let sid = session_id.clone();
             let request_id = tool_request.id.clone();
             let cx = cx.clone();
@@ -2196,15 +1995,7 @@ impl GooseAcpAgent {
             return;
         }
 
-        let agent = match &session.agent {
-            AgentHandle::Ready(a) => a.clone(),
-            AgentHandle::Loading(_) => {
-                warn!(
-                    "tool chain summary: agent still loading; skipping chain anchored at {first_id}",
-                );
-                return;
-            }
-        };
+        let agent = session.agent.clone();
 
         // Snapshot (name, args_json) for each step in document order.
         let steps: Vec<(String, String)> = chain
@@ -2702,38 +2493,26 @@ impl GooseAcpAgent {
         let t_start = std::time::Instant::now();
         validate_absolute_cwd(&args.cwd)?;
 
-        let requested_provider = args
-            .meta
-            .as_ref()
-            .and_then(|m| m.get("provider"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let project_id = args
-            .meta
-            .as_ref()
-            .and_then(|m| m.get("projectId"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let requested_provider = meta_string(args.meta.as_ref(), "provider");
+        let project_id = meta_string(args.meta.as_ref(), "projectId");
+        let config = self.config()?;
+        let (resolved_provider, resolved_model_config) =
+            resolve_provider_and_model_config(&config, requested_provider.as_deref(), None)
+                .await
+                .map_err(|error| {
+                    agent_client_protocol::Error::internal_error()
+                        .data(format!("Failed to resolve provider: {}", error))
+                })?;
 
         // When _meta.client is set, the session is created by a known client
         // (e.g. "goose" for the desktop app) and treated as a User session.
         // Without it, sessions default to Acp for programmatic ACP clients.
-        let session_type = match args
-            .meta
-            .as_ref()
-            .and_then(|m| m.get("client"))
-            .and_then(|v| v.as_str())
-        {
+        let session_type = match meta_string(args.meta.as_ref(), "client") {
             Some(_) => SessionType::User,
             None => SessionType::Acp,
         };
 
-        let current_mode = self
-            .load_config()
-            .ok()
-            .and_then(|config| config.get_goose_mode().ok())
-            .unwrap_or(GooseMode::Auto);
+        let current_mode = config.get_goose_mode().unwrap_or(GooseMode::Auto);
 
         let t0 = std::time::Instant::now();
         let goose_session = self
@@ -2748,9 +2527,9 @@ impl GooseAcpAgent {
             .internal_err_ctx("Failed to create session")?;
 
         let mut builder = self.session_manager.update(&goose_session.id);
-        if let Some(ref provider) = requested_provider {
-            builder = builder.provider_name(provider);
-        }
+        builder = builder
+            .provider_name(resolved_provider)
+            .model_config(resolved_model_config);
         if let Some(pid) = project_id {
             builder = builder.project_id(Some(pid));
         }
@@ -2765,60 +2544,55 @@ impl GooseAcpAgent {
             .await
             .internal_err_ctx("Failed to reload session")?;
 
-        let session_mode = goose_session.goose_mode;
         let session_id_str = goose_session.id.clone();
         let sid = sid_short(&session_id_str);
         debug!(target: "perf", sid = %sid, ms = t0.elapsed().as_millis() as u64, "perf: new_session create_session");
 
-        let (agent_tx, agent_rx) = tokio::sync::watch::channel::<AgentSetupSignal>(None);
+        let acp_session_id = SessionId::new(session_id_str.clone());
+        let init_state = self.prepare_session_init_state(&goose_session).await?;
+
+        let working_dir = goose_session.working_dir.clone();
+
+        let (agent, _extension_results) = self
+            .build_agent_for_session(
+                cx,
+                &goose_session,
+                init_state.resolved_provider.as_ref().ok().cloned(),
+                init_state.prebuilt_provider,
+            )
+            .await?;
+
+        if let Err(error) =
+            Self::add_mcp_extensions(&agent, args.mcp_servers, &goose_session.id).await
+        {
+            error!(
+                error = %error,
+                "new_session MCP server setup failed; continuing with ready session"
+            );
+        }
 
         let acp_session = GooseAcpSession {
-            agent: AgentHandle::Loading(agent_rx),
+            agent,
             tool_requests: HashMap::new(),
             chain_membership: HashMap::new(),
             responded_tool_ids: HashSet::new(),
             summarized_chains: HashSet::new(),
             cancel_token: None,
-            pending_working_dir: None,
         };
         self.sessions
             .lock()
             .await
             .insert(session_id_str.clone(), acp_session);
 
-        let mode_state = build_mode_state(session_mode)?;
-
-        let resolved = resolve_provider_and_model(&self.config_dir, &goose_session).await;
-        let acp_session_id = SessionId::new(session_id_str);
-        let initial_usage_updates = resolved.as_ref().ok().map(|(_, mc)| {
-            build_usage_updates(&acp_session_id, &goose_session, mc.context_limit())
-        });
-        let (model_state, config_options, prebuilt_provider) = self
-            .prepare_session_init_config(&resolved, &mode_state, &goose_session)
-            .await;
-
-        let working_dir = goose_session.working_dir.clone();
-
-        self.spawn_agent_setup(
-            cx,
-            agent_tx,
-            AgentSetupRequest {
-                session_id: acp_session_id.clone(),
-                goose_session,
-                mcp_servers: args.mcp_servers,
-                resolved_provider: resolved.as_ref().ok().cloned(),
-                prebuilt_provider,
-            },
-        );
-
-        let mut response = NewSessionResponse::new(acp_session_id.clone()).modes(mode_state);
-        if let Some(ms) = model_state {
+        let mut response =
+            NewSessionResponse::new(acp_session_id.clone()).modes(init_state.mode_state);
+        if let Some(ms) = init_state.model_state {
             response = response.models(ms);
         }
-        if let Some(co) = config_options {
+        if let Some(co) = init_state.config_options {
             response = response.config_options(co);
         }
-        if let Some(updates) = initial_usage_updates {
+        if let Some(updates) = init_state.usage_updates {
             cx.send_notification(updates.custom)?;
             // Legacy ACP notification — emitted alongside the custom one for
             // backwards compatibility. Remove once all known clients have
@@ -2833,22 +2607,18 @@ impl GooseAcpAgent {
             target: "perf",
             sid = %sid,
             ms = t_start.elapsed().as_millis() as u64,
-            "perf: new_session done (agent setup continues in background)"
+            "perf: new_session done"
         );
         Ok(response)
     }
 
-    /// Look up the session and return the agent if already ready, or the watch
-    /// receiver if still loading.  Optionally sets a cancellation token on the
-    /// session (needed by `on_prompt`).
-    async fn get_agent_or_receiver(
+    /// Look up the session's agent.  Optionally sets a cancellation token on
+    /// the session (needed by `on_prompt`).
+    async fn get_session_agent(
         &self,
         session_id: &str,
         cancel_token: Option<CancellationToken>,
-    ) -> Result<
-        Either<Arc<Agent>, tokio::sync::watch::Receiver<AgentSetupSignal>>,
-        agent_client_protocol::Error,
-    > {
+    ) -> Result<Arc<Agent>, agent_client_protocol::Error> {
         let mut sessions = self.sessions.lock().await;
         let session = sessions.get_mut(session_id).ok_or_else(|| {
             agent_client_protocol::Error::resource_not_found(Some(session_id.to_string()))
@@ -2857,67 +2627,7 @@ impl GooseAcpAgent {
         if let Some(token) = cancel_token {
             session.cancel_token = Some(token);
         }
-        match &session.agent {
-            AgentHandle::Ready(agent) => Ok(Either::Left(agent.clone())),
-            AgentHandle::Loading(rx) => Ok(Either::Right(rx.clone())),
-        }
-    }
-
-    /// Wait until the agent is **fully ready** (provider + all extensions).
-    /// Most callers (e.g. `on_prompt`, `on_get_tools`) should use this.
-    async fn get_session_agent(
-        &self,
-        session_id: &str,
-        cancel_token: Option<CancellationToken>,
-    ) -> Result<Arc<Agent>, agent_client_protocol::Error> {
-        let mut rx = match self.get_agent_or_receiver(session_id, cancel_token).await? {
-            Either::Left(agent) => return Ok(agent),
-            Either::Right(rx) => rx,
-        };
-        // Wait specifically for FullyReady (not just ProviderReady).
-        let guard = rx
-            .wait_for(|v| {
-                matches!(
-                    v,
-                    Some(Ok(AgentSetupProgress::FullyReady(_))) | Some(Err(_))
-                )
-            })
-            .await
-            .map_err(|_| {
-                agent_client_protocol::Error::internal_error()
-                    .data("Agent setup task was dropped".to_string())
-            })?;
-        match guard.as_ref().unwrap() {
-            Ok(AgentSetupProgress::FullyReady(agent)) => Ok(agent.clone()),
-            Err(e) => Err(agent_client_protocol::Error::internal_error().data(e.clone())),
-            // wait_for predicate excludes ProviderReady
-            _ => unreachable!(),
-        }
-    }
-
-    /// Wait only until the **provider** is initialized.  Extensions may still
-    /// be loading in the background.  Use this for operations that only touch
-    /// the provider (e.g. `update_provider`, `set_model`, `build_config_update`).
-    async fn get_session_agent_provider_ready(
-        &self,
-        session_id: &str,
-    ) -> Result<Arc<Agent>, agent_client_protocol::Error> {
-        let mut rx = match self.get_agent_or_receiver(session_id, None).await? {
-            Either::Left(agent) => return Ok(agent),
-            Either::Right(rx) => rx,
-        };
-        // Any signal (ProviderReady, FullyReady, or Err) unblocks us.
-        let guard = rx.wait_for(|v| v.is_some()).await.map_err(|_| {
-            agent_client_protocol::Error::internal_error()
-                .data("Agent setup task was dropped".to_string())
-        })?;
-        match guard.as_ref().unwrap() {
-            Ok(progress) => match progress {
-                AgentSetupProgress::ProviderReady(agent)
-                | AgentSetupProgress::FullyReady(agent) => Ok(agent.clone()),
-            },
-            Err(e) => Err(agent_client_protocol::Error::internal_error().data(e.clone())),
-        }
+        Ok(session.agent.clone())
     }
 
     async fn add_mcp_extensions(
@@ -3131,23 +2841,16 @@ impl GooseAcpAgent {
             .get_session(&session_id, false)
             .await
             .internal_err_ctx("Failed to load session")?;
-        let provider = agent
-            .provider()
-            .await
-            .internal_err_ctx("Failed to get provider")?;
-        let updates = build_usage_updates(
-            &args.session_id,
-            &session,
-            provider.get_model_config().context_limit(),
-        );
-        cx.send_notification(updates.custom)?;
-        // Legacy ACP notification — emitted alongside the custom one for
-        // backwards compatibility. Remove once all known clients have
-        // migrated to `_goose/unstable/session/update`.
-        cx.send_notification(SessionNotification::new(
-            args.session_id.clone(),
-            SessionUpdate::UsageUpdate(updates.legacy),
-        ))?;
+        if let Some(updates) = build_usage_updates(&session) {
+            cx.send_notification(updates.custom)?;
+            // Legacy ACP notification — emitted alongside the custom one for
+            // backwards compatibility. Remove once all known clients have
+            // migrated to `_goose/unstable/session/update`.
+            cx.send_notification(SessionNotification::new(
+                args.session_id.clone(),
+                SessionUpdate::UsageUpdate(updates.legacy),
+            ))?;
+        }
 
         debug!(
             target: "perf",
@@ -3236,7 +2939,7 @@ impl GooseAcpAgent {
         model_id: &str,
     ) -> Result<SetSessionModelResponse, agent_client_protocol::Error> {
         let config = self.config()?;
-        let agent = self.get_session_agent_provider_ready(session_id).await?;
+        let agent = self.get_session_agent(session_id, None).await?;
         let current_provider = agent
             .provider()
             .await
@@ -3286,7 +2989,7 @@ impl GooseAcpAgent {
             .get_session(&session_id.0, false)
             .await
             .internal_err()?;
-        let agent = self.get_session_agent_provider_ready(&session_id.0).await?;
+        let agent = self.get_session_agent(&session_id.0, None).await?;
         let provider = agent
             .provider()
             .await
@@ -3329,7 +3032,7 @@ impl GooseAcpAgent {
                 .data(format!("Invalid mode: {}", mode_id))
         })?;
 
-        let agent = self.get_session_agent_provider_ready(session_id).await?;
+        let agent = self.get_session_agent(session_id, None).await?;
         agent
             .update_goose_mode(mode, session_id)
             .await
@@ -3349,7 +3052,7 @@ impl GooseAcpAgent {
         request_params: Option<std::collections::HashMap<String, serde_json::Value>>,
     ) -> Result<(), agent_client_protocol::Error> {
         let config = self.config()?;
-        let agent = self.get_session_agent_provider_ready(session_id).await?;
+        let agent = self.get_session_agent(session_id, None).await?;
         let current_provider = agent
             .provider()
             .await
@@ -3533,41 +3236,43 @@ impl GooseAcpAgent {
             .await
             .internal_err()?;
 
-        let (agent_tx, agent_rx) = tokio::sync::watch::channel::<AgentSetupSignal>(None);
-
-        let acp_session = GooseAcpSession {
-            agent: AgentHandle::Loading(agent_rx),
-            tool_requests: HashMap::new(),
-            chain_membership: HashMap::new(),
-            responded_tool_ids: HashSet::new(),
-            summarized_chains: HashSet::new(),
-            cancel_token: None,
-            pending_working_dir: None,
-        };
-        self.sessions
-            .lock()
-            .await
-            .insert(new_session_id.clone(), acp_session);
-
         let mode_state = build_mode_state(goose_session.goose_mode)?;
         let resolved = resolve_provider_and_model(&self.config_dir, &goose_session).await;
         let (model_state, config_options, prebuilt_provider) = self
             .prepare_session_init_config(&resolved, &mode_state, &goose_session)
             .await;
 
-        let acp_session_id = SessionId::new(new_session_id.clone());
-
-        self.spawn_agent_setup(
-            cx,
-            agent_tx,
-            AgentSetupRequest {
-                session_id: acp_session_id.clone(),
-                goose_session,
-                mcp_servers: args.mcp_servers,
-                resolved_provider: resolved.ok(),
+        let (agent, _extension_results) = self
+            .build_agent_for_session(
+                cx,
+                &goose_session,
+                resolved.as_ref().ok().cloned(),
                 prebuilt_provider,
-            },
-        );
+            )
+            .await?;
+
+        if let Err(error) =
+            Self::add_mcp_extensions(&agent, args.mcp_servers, &goose_session.id).await
+        {
+            error!(
+                error = %error,
+                "fork_session MCP server setup failed; continuing with ready session"
+            );
+        }
+
+        let acp_session_id = SessionId::new(new_session_id.clone());
+        let acp_session = GooseAcpSession {
+            agent,
+            tool_requests: HashMap::new(),
+            chain_membership: HashMap::new(),
+            responded_tool_ids: HashSet::new(),
+            summarized_chains: HashSet::new(),
+            cancel_token: None,
+        };
+        self.sessions
+            .lock()
+            .await
+            .insert(new_session_id.clone(), acp_session);
 
         let meta = session_meta(&new_session);
 
@@ -4566,9 +4271,13 @@ print(\"hello, world\")
 
     #[test]
     fn test_build_usage_update_clamps_negative_used_to_zero() {
-        let session = make_session_with_usage(Some(-7), Some(0), Some(0), None, None, None);
-        let updates =
-            build_usage_updates(&SessionId::new("session-1".to_string()), &session, 258_000);
+        let mut session = make_session_with_usage(Some(-7), Some(0), Some(0), None, None, None);
+        session.model_config = Some(
+            crate::model::ModelConfig::new("test-model")
+                .unwrap()
+                .with_context_limit(Some(258_000)),
+        );
+        let updates = build_usage_updates(&session).expect("usage updates should be present");
         assert_eq!(updates.custom.session_id, "session-1");
         let usage = match updates.custom.update {
             GooseSessionUpdate::UsageUpdate(usage) => usage,
@@ -4578,6 +4287,12 @@ print(\"hello, world\")
         assert_eq!(usage.context_limit, 258_000);
         assert_eq!(updates.legacy.used, 0);
         assert_eq!(updates.legacy.size, 258_000);
+    }
+
+    #[test]
+    fn test_build_usage_update_requires_model_config() {
+        let session = make_session_with_usage(Some(120), Some(80), Some(40), None, None, None);
+        assert!(build_usage_updates(&session).is_none());
     }
 
     #[test_case(

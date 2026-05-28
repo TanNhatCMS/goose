@@ -191,7 +191,7 @@ fn collect_submitted_elicitation_ids(messages: &[Message]) -> HashSet<String> {
 }
 
 impl GooseAcpAgent {
-    async fn build_agent_for_session(
+    pub(super) async fn build_agent_for_session(
         &self,
         cx: &ConnectionTo<Client>,
         session: &Session,
@@ -390,8 +390,8 @@ impl GooseAcpAgent {
             });
         }
 
-        // `add_mcp_extensions` intentionally NOT called:
-        // `handle_load_session` rejects non-empty `args.mcp_servers`.
+        // Request-scoped MCP servers are handled by the caller. load_session
+        // rejects them, while new_session still accepts and adds them.
 
         debug!(
             target: "perf",
@@ -461,29 +461,19 @@ impl GooseAcpAgent {
         let replay_tool_requests = replay_conversation_to_client(cx, &session)?;
 
         let acp_session = GooseAcpSession {
-            agent: AgentHandle::Ready(agent.clone()),
+            agent: agent.clone(),
             tool_requests: replay_tool_requests,
             chain_membership: HashMap::new(),
             responded_tool_ids: HashSet::new(),
             summarized_chains: HashSet::new(),
             cancel_token: None,
-            pending_working_dir: None,
         };
         self.sessions
             .lock()
             .await
             .insert(session_id_str.clone(), acp_session);
 
-        let initial_usage_updates = resolved
-            .as_ref()
-            .ok()
-            .map(|(_, mc)| build_usage_updates(&args.session_id, &session, mc.context_limit()))
-            .or_else(|| {
-                session
-                    .model_config
-                    .as_ref()
-                    .map(|mc| build_usage_updates(&args.session_id, &session, mc.context_limit()))
-            });
+        let initial_usage_updates = build_usage_updates(&session);
         if let Some(updates) = initial_usage_updates {
             cx.send_notification(updates.custom)?;
             // Legacy UsageUpdate alongside the custom one for compat.

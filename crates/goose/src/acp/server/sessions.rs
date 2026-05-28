@@ -20,15 +20,12 @@ impl GooseAcpAgent {
             .await
             .internal_err()?;
 
-        if let Some(session) = self.sessions.lock().await.get_mut(session_id) {
-            match &session.agent {
-                AgentHandle::Ready(agent) => {
-                    agent.extension_manager.update_working_dir(&path).await;
-                }
-                AgentHandle::Loading(_) => {
-                    session.pending_working_dir = Some(path);
-                }
-            }
+        if let Some(session) = self.sessions.lock().await.get(session_id) {
+            session
+                .agent
+                .extension_manager
+                .update_working_dir(&path)
+                .await;
         }
 
         Ok(EmptyResponse {})
