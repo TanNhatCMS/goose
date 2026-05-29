@@ -39,13 +39,21 @@ modules:
       - install -Dm0644 cargo/config .cargo/config.toml
       - cargo --offline build --release -p goose-server
       - install -Dm0755 target/release/goosed ui/desktop/src/bin/goosed
-      - cd ui && corepack enable && pnpm config set store-dir /run/build/goose-desktop/flatpak-node/pnpm-store && pnpm install --offline --frozen-lockfile
-      - cd ui/desktop && pnpm run i18n:compile && ELECTRON_SKIP_BINARY_DOWNLOAD=1 ELECTRON_OVERRIDE_DIST_PATH=/usr/lib/sdk/node24/lib/node_modules/electron/dist npx electron-forge package --platform=linux
-      - mkdir -p /app/lib/goose
-      - cp -a ui/desktop/out/Goose-linux*/. /app/lib/goose/
-      - install -Dm0755 flatpak/goose-desktop.sh /app/bin/goose-desktop
-      - install -Dm0644 flatpak/io.github.block.Goose.desktop /app/share/applications/io.github.block.Goose.desktop
-      - install -Dm0644 flatpak/io.github.block.Goose.metainfo.xml /app/share/metainfo/io.github.block.Goose.metainfo.xml
+      - mkdir -p /run/build/goose-desktop/pnpm-cli /run/build/goose-desktop/pnpm-bin && tar -xzf pnpm-10.30.3.tgz -C /run/build/goose-desktop/pnpm-cli && ln -sf /run/build/goose-desktop/pnpm-cli/package/bin/pnpm.cjs /run/build/goose-desktop/pnpm-bin/pnpm && ln -sf /run/build/goose-desktop/pnpm-cli/package/bin/pnpx.cjs /run/build/goose-desktop/pnpm-bin/pnpx
+      - export PATH="/run/build/goose-desktop/pnpm-bin:$PATH" && cd ui && pnpm config set store-dir /run/build/goose-desktop/flatpak-node/pnpm-store && pnpm install --offline --frozen-lockfile
+      - |
+        export PATH="/run/build/goose-desktop/pnpm-bin:$PATH" && \
+        cd ui/desktop && \
+        perl -0pi -e "s/const \{ resolve \} = require\('path'\);\n/const { resolve } = require('path');\nconst postPackage = require('..\/..\/forge-post-package');\n/" forge.config.ts && \
+        perl -0pi -e "s/  icon: 'src\/images\/icon',\n/  icon: 'src\/images\/icon',\n  electronZipDir: process.env.ELECTRON_ZIP_DIR,\n/" forge.config.ts && \
+        perl -0pi -e "s/module\.exports = \{\n/module.exports = {\n  hooks: { postPackage },\n/" forge.config.ts && \
+        pnpm run i18n:compile && \
+        ELECTRON_SKIP_BINARY_DOWNLOAD=1 \
+        ELECTRON_ZIP_DIR=/run/build/goose-desktop/flatpak-node/cache/electron \
+        pnpm exec electron-forge package --platform=linux
+      - install -Dm0755 goose-desktop.sh /app/bin/goose-desktop
+      - install -Dm0644 io.github.block.Goose.desktop /app/share/applications/io.github.block.Goose.desktop
+      - install -Dm0644 io.github.block.Goose.metainfo.xml /app/share/metainfo/io.github.block.Goose.metainfo.xml
       - install -Dm0644 ui/desktop/src/images/icon.svg /app/share/icons/hicolor/scalable/apps/io.github.block.Goose.svg
       - install -Dm0644 ui/desktop/src/images/icon-512.png /app/share/icons/hicolor/512x512/apps/io.github.block.Goose.png
     sources:
@@ -56,5 +64,16 @@ modules:
       - type: file
         url: https://github.com/denoland/rusty_v8/releases/download/v145.0.0/librusty_v8_release_x86_64-unknown-linux-gnu.a.gz
         sha256: 7215753c0c78d141f752d7b993794bae07e18a1dfd466dcaa84fa64e76bacac1
+      - type: file
+        url: https://registry.npmjs.org/pnpm/-/pnpm-10.30.3.tgz
+        sha512: c961d1e0a2d8e354ecaa5166b822516668b7f44cb5bd95122d590dd81922f606f5473b6d23ec4a5be05e7fcd18e8488d47d978bbe981872f1145d06e9a740017
+      - type: file
+        path: flatpak/forge-post-package.js
+      - type: file
+        path: flatpak/goose-desktop.sh
+      - type: file
+        path: flatpak/io.github.block.Goose.desktop
+      - type: file
+        path: flatpak/io.github.block.Goose.metainfo.xml
       - flatpak/cargo-sources.json
       - flatpak/generated-sources.json

@@ -1,5 +1,6 @@
 {
   "private": true,
+  "packageManager": "pnpm@11.4.0",
   "workspaces": [
     "acp",
     "text",

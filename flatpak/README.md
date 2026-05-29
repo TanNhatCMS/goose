@@ -10,6 +10,7 @@ Files in this workflow:
 - `flatpak/goose-desktop.sh`: launcher wrapper used inside the sandbox
 - `flatpak/cargo-sources.json`: offline Cargo dependency sources generated from `Cargo.lock`
 - `flatpak/generated-sources.json`: offline pnpm dependency sources generated from `ui/pnpm-lock.yaml`
+- `flatpak/forge-post-package.js`: local hook used during `electron-forge package` to copy the packaged app into `/app/lib/goose`
 
 ## Important distinction
 
@@ -28,10 +29,14 @@ Instead it:
 
 1. Builds `goose-server` from source inside the Flatpak SDK.
 2. Copies the resulting `goosed` binary into `ui/desktop/src/bin/goosed`.
-3. Installs the `ui/` pnpm workspace offline from `flatpak/generated-sources.json`.
-4. Runs `electron-forge package --platform=linux` inside the Flatpak build sandbox.
-5. Copies the packaged app into `/app/lib/goose`.
-6. Installs the desktop file, metainfo, icons, and wrapper script.
+3. Bootstraps a pinned `pnpm@10.30.3` from `pnpm-10.30.3.tgz` and exposes real `pnpm` and `pnpx` shims on `PATH`.
+4. Installs the `ui/` pnpm workspace offline from `flatpak/generated-sources.json`.
+5. Patches `ui/desktop/forge.config.ts` during the build to point Electron Forge at the staged offline Electron ZIP cache and add a `postPackage` hook.
+6. Runs `electron-forge package --platform=linux` inside the Flatpak build sandbox.
+7. Copies the packaged app into `/app/lib/goose` from Forge's actual `outputPaths`.
+8. Installs the desktop file, metainfo, icons, and wrapper script.
+
+The manifest builds from the Goose release tarball, not from the working tree. Because that tarball does not include the repo's `flatpak/` directory, the local packaging files in `flatpak/` are added as explicit `type: file` sources in `io.github.block.Goose.yaml`.
 
 Runtime behavior also differs from the Electron Forge `.flatpak` artifact:
 
@@ -53,11 +58,20 @@ Required tools:
 - `appstreamcli`
 - `desktop-file-validate`
 
-You also need the Flathub remote configured:
+If you build with `--user`, you need the user-scoped Flathub remote configured:
 
 ```bash
-flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 ```
+
+On this host, `flatpak-builder` also required disabling rofiles FUSE because `rofiles-fuse` failed with:
+
+```text
+fusermount3: failed to access mountpoint ... Permission denied
+Error: Failure spawning rofiles-fuse, exit_status: 1024
+```
+
+The local workaround was `--disable-rofiles-fuse`.
 
 Build the manifest locally:
 
@@ -67,6 +81,7 @@ flatpak-builder \
   --install \
   --install-deps-from=flathub \
   --force-clean \
+  --disable-rofiles-fuse \
   builddir \
   io.github.block.Goose.yaml
 ```
@@ -84,6 +99,7 @@ flatpak-builder \
   --user \
   --install-deps-from=flathub \
   --force-clean \
+  --disable-rofiles-fuse \
   --repo=repo \
   builddir \
   io.github.block.Goose.yaml
@@ -126,6 +142,28 @@ Those are expected for the current packaging model:
 - `--filesystem=home` is intentional because Goose works against real project directories
 - `--talk-name=org.freedesktop.Flatpak` is intentional because Goose needs `flatpak-spawn --host` for host-side shell execution
 - `appid-url-not-reachable` currently points at the legacy app ID owner URL and should be fixed before or during Flathub review
+
+## Proven local result
+
+The following command was run locally and completed successfully:
+
+```bash
+flatpak-builder \
+  --user \
+  --install \
+  --install-deps-from=flathub \
+  --force-clean \
+  --disable-rofiles-fuse \
+  builddir \
+  io.github.block.Goose.yaml
+```
+
+That run:
+
+- built `goose-server`
+- installed the pnpm workspace fully offline
+- packaged the Electron app fully offline
+- exported and installed `app/io.github.block.Goose/x86_64/master`
 
 ## When to regenerate generated sources
 
