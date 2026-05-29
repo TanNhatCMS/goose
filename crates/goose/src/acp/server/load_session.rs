@@ -191,6 +191,7 @@ fn collect_submitted_elicitation_ids(messages: &[Message]) -> HashSet<String> {
 }
 
 impl GooseAcpAgent {
+    #[allow(dead_code)]
     pub(super) async fn build_agent_for_session(
         &self,
         cx: &ConnectionTo<Client>,
@@ -403,6 +404,7 @@ impl GooseAcpAgent {
         Ok((agent, extension_results))
     }
 
+    #[allow(dead_code)]
     pub(super) async fn handle_load_session(
         &self,
         cx: &ConnectionTo<Client>,
@@ -520,6 +522,102 @@ impl GooseAcpAgent {
             sid = %sid,
             ms = t_start.elapsed().as_millis() as u64,
             "perf: load_session done"
+        );
+        Ok(response)
+    }
+
+    #[allow(dead_code)]
+    pub(super) async fn handle_load_session_refactor(
+        &self,
+        cx: &ConnectionTo<Client>,
+        args: LoadSessionRequest,
+    ) -> Result<LoadSessionResponse, agent_client_protocol::Error> {
+        debug!(?args, "load session request");
+        validate_absolute_cwd(&args.cwd)?;
+
+        let session_id_str = args.session_id.0.to_string();
+        let sid = sid_short(&session_id_str);
+        let t_start = std::time::Instant::now();
+
+        let mut session = self
+            .session_manager
+            .get_session(&session_id_str, true)
+            .await
+            .map_err(|_| {
+                agent_client_protocol::Error::resource_not_found(Some(session_id_str.clone()))
+                    .data(format!("Session not found: {}", session_id_str))
+            })?;
+
+        session = super::session_setup::prepare_session_for_activation(
+            self,
+            session,
+            args.cwd.clone(),
+            args.mcp_servers,
+            true,
+        )
+        .await?;
+
+        let (agent, extension_results) = self.prepare_acp_session_agent(cx, &session).await?;
+        let replay_tool_requests = replay_conversation_to_client(cx, &session)?;
+        self.register_acp_session(session_id_str.clone(), agent, replay_tool_requests)
+            .await;
+
+        session = self
+            .session_manager
+            .get_session(&session_id_str, true)
+            .await
+            .internal_err_ctx("Failed to reload session")?;
+
+        let mode_state = build_mode_state(session.goose_mode)?;
+        let usage_updates = build_usage_updates(&session);
+        let (model_state, config_options) =
+            self.build_eager_session_config(&mode_state, &session).await;
+
+        if let Some(updates) = usage_updates {
+            cx.send_notification(updates.custom)?;
+            cx.send_notification(SessionNotification::new(
+                args.session_id.clone(),
+                SessionUpdate::UsageUpdate(updates.legacy),
+            ))?;
+        }
+
+        Self::send_available_commands_update(cx, &args.session_id, &session.working_dir)?;
+
+        let mut response = LoadSessionResponse::new().modes(mode_state);
+        if let Some(ms) = model_state {
+            response = response.models(ms);
+        }
+        if let Some(co) = config_options {
+            response = response.config_options(co);
+        }
+
+        let mut meta = serde_json::Map::new();
+        if let Some(recipe) = &session.recipe {
+            if let Ok(v) = serde_json::to_value(recipe) {
+                meta.insert("recipe".to_string(), v);
+            }
+        }
+        if let Some(values) = &session.user_recipe_values {
+            if let Ok(v) = serde_json::to_value(values) {
+                meta.insert("userRecipeValues".to_string(), v);
+            }
+        }
+        if let Ok(v) = serde_json::to_value(&extension_results) {
+            meta.insert("extensionResults".to_string(), v);
+        }
+        meta.insert(
+            "workingDir".to_string(),
+            serde_json::Value::String(session.working_dir.to_string_lossy().to_string()),
+        );
+        if !meta.is_empty() {
+            response = response.meta(meta);
+        }
+
+        debug!(
+            target: "perf",
+            sid = %sid,
+            ms = t_start.elapsed().as_millis() as u64,
+            "perf: load_session_refactor done"
         );
         Ok(response)
     }

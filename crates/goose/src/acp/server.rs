@@ -86,12 +86,14 @@ mod custom_dispatch;
 mod dictation;
 mod dispatch;
 mod extensions;
+mod fork_session;
 mod load_session;
 mod new_session;
 mod new_session_agent_manager;
 mod onboarding;
 mod providers;
 mod resources;
+mod session_setup;
 mod sessions;
 mod sources;
 mod tools;
@@ -202,6 +204,7 @@ struct ToolChain {
     message_id: String,
 }
 
+#[allow(dead_code)]
 struct SessionInitState {
     mode_state: SessionModeState,
     resolved_provider: Result<(String, crate::model::ModelConfig), String>,
@@ -235,6 +238,7 @@ pub struct GooseAcpAgent {
     permission_manager: Arc<PermissionManager>,
     disable_session_naming: bool,
     provider_inventory: ProviderInventoryService,
+    #[allow(dead_code)]
     goose_platform: GoosePlatform,
     additional_source_roots: Vec<SourceRoot>,
 }
@@ -242,7 +246,7 @@ pub struct GooseAcpAgent {
 /// Shorten a session/thread id for perf log correlation.
 /// All `perf:` logs use `sid=<8-char-prefix>` so a single session's activity
 /// can be extracted with `grep 'perf:' <log> | grep 'sid=abc12345'`.
-fn sid_short(id: &str) -> String {
+pub(super) fn sid_short(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
@@ -347,7 +351,7 @@ fn display_title(s: &Session) -> Option<String> {
     }
 }
 
-fn session_meta(session: &Session) -> serde_json::Map<String, serde_json::Value> {
+pub(super) fn session_meta(session: &Session) -> serde_json::Map<String, serde_json::Value> {
     let mut meta = serde_json::Map::new();
     meta.insert(
         "messageCount".to_string(),
@@ -946,6 +950,7 @@ fn builtin_to_extension_config(name: &str) -> ExtensionConfig {
     }
 }
 
+#[allow(dead_code)]
 async fn provider_default_model_config(
     provider_name: &str,
 ) -> Result<crate::model::ModelConfig, String> {
@@ -958,6 +963,7 @@ async fn provider_default_model_config(
         .map(|model_config| model_config.with_canonical_limits(provider_name))
 }
 
+#[allow(dead_code)]
 fn global_model_config(
     config: &Config,
     provider_name: &str,
@@ -968,6 +974,7 @@ fn global_model_config(
         .map(|model_config| model_config.with_canonical_limits(provider_name))
 }
 
+#[allow(dead_code)]
 async fn resolve_provider_and_model_config(
     config: &Config,
     provider_selection: Option<&str>,
@@ -994,6 +1001,7 @@ async fn resolve_provider_and_model_config(
 
 /// Resolve the provider name and model config for a session from an
 /// already-loaded `Config`.
+#[allow(dead_code)]
 async fn resolve_provider_and_model_from_config(
     config: &Config,
     goose_session: &Session,
@@ -1043,7 +1051,8 @@ fn with_preserved_session_request_params(
 
 /// Convenience wrapper: reads config from disk, then resolves provider + model.
 /// Cheap enough to call from `on_new_session` (file + registry reads, no network).
-async fn resolve_provider_and_model(
+#[allow(dead_code)]
+pub(super) async fn resolve_provider_and_model(
     config_dir: &std::path::Path,
     goose_session: &Session,
 ) -> Result<(String, crate::model::ModelConfig), String> {
@@ -1090,7 +1099,7 @@ fn build_usage_updates(session: &Session) -> Option<UsageUpdates> {
     })
 }
 
-fn validate_absolute_cwd(cwd: &Path) -> Result<(), agent_client_protocol::Error> {
+pub(super) fn validate_absolute_cwd(cwd: &Path) -> Result<(), agent_client_protocol::Error> {
     if !cwd.is_absolute() {
         return Err(
             agent_client_protocol::Error::invalid_params().data("cwd must be an absolute path")
@@ -1202,6 +1211,7 @@ impl GooseAcpAgent {
         .await
     }
 
+    #[allow(dead_code)]
     async fn prepare_session_init_config(
         &self,
         resolved: &Result<(String, crate::model::ModelConfig), String>,
@@ -1252,6 +1262,7 @@ impl GooseAcpAgent {
         (Some(model_state), Some(config_options), prebuilt_provider)
     }
 
+    #[allow(dead_code)]
     async fn maybe_refresh_provider_inventory(&self, goose_session: &Session) {
         let Some(provider_name) = goose_session.provider_name.as_deref() else {
             return;
@@ -1438,11 +1449,10 @@ impl GooseAcpAgent {
             .await;
     }
 
-    async fn activate_acp_session(
+    async fn prepare_acp_session_agent(
         &self,
         cx: &ConnectionTo<Client>,
         session: &Session,
-        tool_requests: HashMap<String, ToolRequest>,
     ) -> Result<(Arc<Agent>, Vec<ExtensionLoadResult>), agent_client_protocol::Error> {
         let agent_result = self
             .get_or_create_session_agent_with_results(cx, session.id.clone())
@@ -1450,24 +1460,40 @@ impl GooseAcpAgent {
         let agent = agent_result.agent.clone();
         self.apply_acp_extension_overrides(cx, &agent, session)
             .await;
+        self.maybe_refresh_provider_inventory_with_agent(session, &agent)
+            .await;
 
+        Ok((agent, agent_result.extension_results))
+    }
+
+    async fn register_acp_session(
+        &self,
+        session_id: String,
+        agent: Arc<Agent>,
+        tool_requests: HashMap<String, ToolRequest>,
+    ) {
         let acp_session = GooseAcpSession {
-            agent: agent.clone(),
+            agent,
             tool_requests,
             chain_membership: HashMap::new(),
             responded_tool_ids: HashSet::new(),
             summarized_chains: HashSet::new(),
             cancel_token: None,
         };
-        self.sessions
-            .lock()
-            .await
-            .insert(session.id.clone(), acp_session);
+        self.sessions.lock().await.insert(session_id, acp_session);
+    }
 
-        self.maybe_refresh_provider_inventory_with_agent(session, &agent)
+    async fn activate_acp_session(
+        &self,
+        cx: &ConnectionTo<Client>,
+        session: &Session,
+        tool_requests: HashMap<String, ToolRequest>,
+    ) -> Result<(Arc<Agent>, Vec<ExtensionLoadResult>), agent_client_protocol::Error> {
+        let (agent, extension_results) = self.prepare_acp_session_agent(cx, session).await?;
+        self.register_acp_session(session.id.clone(), agent.clone(), tool_requests)
             .await;
 
-        Ok((agent, agent_result.extension_results))
+        Ok((agent, extension_results))
     }
 
     async fn build_eager_session_config(
@@ -1500,6 +1526,7 @@ impl GooseAcpAgent {
         (Some(model_state), Some(config_options))
     }
 
+    #[allow(dead_code)]
     async fn build_session_provider(
         &self,
         provider_name: &str,
@@ -1647,6 +1674,7 @@ impl GooseAcpAgent {
         }
     }
 
+    #[allow(dead_code)]
     async fn prepare_session_init_state(
         &self,
         goose_session: &Session,
@@ -2609,127 +2637,7 @@ impl GooseAcpAgent {
         cx: &ConnectionTo<Client>,
         args: NewSessionRequest,
     ) -> Result<NewSessionResponse, agent_client_protocol::Error> {
-        debug!(?args, "new session request");
-        let t_start = std::time::Instant::now();
-        validate_absolute_cwd(&args.cwd)?;
-
-        let requested_provider = meta_string(args.meta.as_ref(), "provider");
-        let project_id = meta_string(args.meta.as_ref(), "projectId");
-        let config = self.config()?;
-        let (resolved_provider, resolved_model_config) =
-            resolve_provider_and_model_config(&config, requested_provider.as_deref(), None)
-                .await
-                .map_err(|error| {
-                    agent_client_protocol::Error::internal_error()
-                        .data(format!("Failed to resolve provider: {}", error))
-                })?;
-
-        // When _meta.client is set, the session is created by a known client
-        // (e.g. "goose" for the desktop app) and treated as a User session.
-        // Without it, sessions default to Acp for programmatic ACP clients.
-        let session_type = match meta_string(args.meta.as_ref(), "client") {
-            Some(_) => SessionType::User,
-            None => SessionType::Acp,
-        };
-
-        let current_mode = config.get_goose_mode().unwrap_or(GooseMode::Auto);
-
-        let t0 = std::time::Instant::now();
-        let goose_session = self
-            .session_manager
-            .create_session(
-                args.cwd.clone(),
-                "New Chat".to_string(),
-                session_type,
-                current_mode,
-            )
-            .await
-            .internal_err_ctx("Failed to create session")?;
-
-        let mut builder = self.session_manager.update(&goose_session.id);
-        builder = builder
-            .provider_name(resolved_provider)
-            .model_config(resolved_model_config);
-        if let Some(pid) = project_id {
-            builder = builder.project_id(Some(pid));
-        }
-        builder
-            .apply()
-            .await
-            .internal_err_ctx("Failed to update session")?;
-
-        let goose_session = self
-            .session_manager
-            .get_session(&goose_session.id, false)
-            .await
-            .internal_err_ctx("Failed to reload session")?;
-
-        let session_id_str = goose_session.id.clone();
-        let sid = sid_short(&session_id_str);
-        debug!(target: "perf", sid = %sid, ms = t0.elapsed().as_millis() as u64, "perf: new_session create_session");
-
-        let acp_session_id = SessionId::new(session_id_str.clone());
-        let init_state = self.prepare_session_init_state(&goose_session).await?;
-
-        let working_dir = goose_session.working_dir.clone();
-
-        let (agent, _extension_results) = self
-            .build_agent_for_session(
-                cx,
-                &goose_session,
-                init_state.resolved_provider.as_ref().ok().cloned(),
-                init_state.prebuilt_provider,
-            )
-            .await?;
-
-        if let Err(error) =
-            Self::add_mcp_extensions(&agent, args.mcp_servers, &goose_session.id).await
-        {
-            error!(
-                error = %error,
-                "new_session MCP server setup failed; continuing with ready session"
-            );
-        }
-
-        let acp_session = GooseAcpSession {
-            agent,
-            tool_requests: HashMap::new(),
-            chain_membership: HashMap::new(),
-            responded_tool_ids: HashSet::new(),
-            summarized_chains: HashSet::new(),
-            cancel_token: None,
-        };
-        self.sessions
-            .lock()
-            .await
-            .insert(session_id_str.clone(), acp_session);
-
-        let mut response =
-            NewSessionResponse::new(acp_session_id.clone()).modes(init_state.mode_state);
-        if let Some(ms) = init_state.model_state {
-            response = response.models(ms);
-        }
-        if let Some(co) = init_state.config_options {
-            response = response.config_options(co);
-        }
-        if let Some(updates) = init_state.usage_updates {
-            cx.send_notification(updates.custom)?;
-            // Legacy ACP notification — emitted alongside the custom one for
-            // backwards compatibility. Remove once all known clients have
-            // migrated to `_goose/unstable/session/update`.
-            cx.send_notification(SessionNotification::new(
-                acp_session_id.clone(),
-                SessionUpdate::UsageUpdate(updates.legacy),
-            ))?;
-        }
-        Self::send_available_commands_update(cx, &acp_session_id, &working_dir)?;
-        debug!(
-            target: "perf",
-            sid = %sid,
-            ms = t_start.elapsed().as_millis() as u64,
-            "perf: new_session done"
-        );
-        Ok(response)
+        self.handle_new_session(cx, args).await
     }
 
     /// Look up the session's agent.  Optionally sets a cancellation token on
@@ -2750,6 +2658,7 @@ impl GooseAcpAgent {
         Ok(session.agent.clone())
     }
 
+    #[allow(dead_code)]
     async fn add_mcp_extensions(
         agent: &Arc<Agent>,
         mcp_servers: Vec<McpServer>,
@@ -2791,7 +2700,7 @@ impl GooseAcpAgent {
         cx: &ConnectionTo<Client>,
         args: LoadSessionRequest,
     ) -> Result<LoadSessionResponse, agent_client_protocol::Error> {
-        self.handle_load_session(cx, args).await
+        self.handle_load_session_refactor(cx, args).await
     }
 
     async fn on_prompt(
@@ -3321,93 +3230,7 @@ impl GooseAcpAgent {
         cx: &ConnectionTo<Client>,
         args: ForkSessionRequest,
     ) -> Result<ForkSessionResponse, agent_client_protocol::Error> {
-        validate_absolute_cwd(&args.cwd)?;
-        let source_session_id = &*args.session_id.0;
-
-        let source = self
-            .session_manager
-            .get_session(source_session_id, false)
-            .await
-            .internal_err()?;
-        let fork_name = if source.name.trim().is_empty() {
-            "(copy)".to_string()
-        } else {
-            format!("{} (copy)", source.name)
-        };
-
-        let new_session = self
-            .session_manager
-            .copy_session(source_session_id, fork_name)
-            .await
-            .internal_err()?;
-        let new_session_id = new_session.id.clone();
-
-        // Update working dir for the fork.
-        self.session_manager
-            .update(&new_session_id)
-            .working_dir(args.cwd.clone())
-            .apply()
-            .await
-            .internal_err()?;
-
-        let goose_session = self
-            .session_manager
-            .get_session(&new_session_id, false)
-            .await
-            .internal_err()?;
-
-        let mode_state = build_mode_state(goose_session.goose_mode)?;
-        let resolved = resolve_provider_and_model(&self.config_dir, &goose_session).await;
-        let (model_state, config_options, prebuilt_provider) = self
-            .prepare_session_init_config(&resolved, &mode_state, &goose_session)
-            .await;
-
-        let (agent, _extension_results) = self
-            .build_agent_for_session(
-                cx,
-                &goose_session,
-                resolved.as_ref().ok().cloned(),
-                prebuilt_provider,
-            )
-            .await?;
-
-        if let Err(error) =
-            Self::add_mcp_extensions(&agent, args.mcp_servers, &goose_session.id).await
-        {
-            error!(
-                error = %error,
-                "fork_session MCP server setup failed; continuing with ready session"
-            );
-        }
-
-        let acp_session_id = SessionId::new(new_session_id.clone());
-        let acp_session = GooseAcpSession {
-            agent,
-            tool_requests: HashMap::new(),
-            chain_membership: HashMap::new(),
-            responded_tool_ids: HashSet::new(),
-            summarized_chains: HashSet::new(),
-            cancel_token: None,
-        };
-        self.sessions
-            .lock()
-            .await
-            .insert(new_session_id.clone(), acp_session);
-
-        let meta = session_meta(&new_session);
-
-        let mut response = ForkSessionResponse::new(acp_session_id.clone())
-            .modes(mode_state)
-            .meta(meta);
-
-        if let Some(ms) = model_state {
-            response = response.models(ms);
-        }
-        if let Some(co) = config_options {
-            response = response.config_options(co);
-        }
-        Self::send_available_commands_update(cx, &acp_session_id, &args.cwd)?;
-        Ok(response)
+        self.handle_fork_session(cx, args).await
     }
 
     async fn on_close_session(

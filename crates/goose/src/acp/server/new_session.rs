@@ -2,9 +2,7 @@ use crate::acp::server::{
     build_mode_state, build_usage_updates, meta_string, sid_short, validate_absolute_cwd, ResultExt,
 };
 use crate::config::{Config, GooseMode};
-use crate::model::ModelConfig;
 use crate::session::SessionType;
-use crate::session::{EnabledExtensionsState, ExtensionState};
 
 use super::GooseAcpAgent;
 use agent_client_protocol::schema::{
@@ -30,20 +28,8 @@ impl GooseAcpAgent {
             None => SessionType::Acp,
         };
         let config = Config::global();
-        let resolved_provider = config.get_goose_provider().map_err(|error| {
-            agent_client_protocol::Error::internal_error()
-                .data(format!("Failed to resolve provider: {}", error))
-        })?;
-        let resolved_model = config.get_goose_model().map_err(|error| {
-            agent_client_protocol::Error::internal_error()
-                .data(format!("Failed to resolve model: {}", error))
-        })?;
-        let resolved_model_config = ModelConfig::new(&resolved_model)
-            .map(|model_config| model_config.with_canonical_limits(&resolved_provider))
-            .map_err(|error| {
-                agent_client_protocol::Error::internal_error()
-                    .data(format!("Failed to resolve model: {}", error))
-            })?;
+        let (resolved_provider, resolved_model_config) =
+            super::session_setup::resolve_default_provider_model_config(config)?;
         let current_mode: GooseMode = config.get_goose_mode().unwrap_or_default();
         let t0 = std::time::Instant::now();
         let mut goose_session = self
@@ -57,11 +43,12 @@ impl GooseAcpAgent {
             .await
             .internal_err_ctx("Failed to create session")?;
         let mut builder = self.session_manager.update(&goose_session.id);
-        let extensions = self.initial_session_extensions(config, args.mcp_servers)?;
-        let mut extension_data = goose_session.extension_data.clone();
-        EnabledExtensionsState::new(extensions)
-            .to_extension_data(&mut extension_data)
-            .internal_err_ctx("Failed to initialize session extensions")?;
+        let extension_data = super::session_setup::build_enabled_extensions_data(
+            self,
+            config,
+            &goose_session,
+            args.mcp_servers,
+        )?;
         builder = builder
             .provider_name(resolved_provider)
             .model_config(resolved_model_config)
