@@ -3,7 +3,8 @@ use crate::acp::custom_requests::*;
 use crate::acp::fs::AcpTools;
 pub(super) use crate::acp::response_builder::{
     build_config_options, build_mode_state, build_model_state, build_provider_options,
-    session_provider_selection, should_refresh_inventory_for_session_init,
+    build_session_setup_config, send_session_setup_notifications, session_provider_selection,
+    should_refresh_inventory_for_session_init,
 };
 use crate::acp::tools::AcpAwareToolMeta;
 use crate::acp::{PermissionDecision, ACP_CURRENT_MODEL};
@@ -41,21 +42,20 @@ use crate::source_roots::SourceRoot;
 use crate::utils::sanitize_unicode_tags;
 use agent_client_protocol::schema::{
     AgentCapabilities, Annotations, AuthMethod, AuthMethodAgent, AuthenticateRequest,
-    AuthenticateResponse, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
-    BlobResourceContents, CancelNotification, CloseSessionRequest, CloseSessionResponse,
-    ConfigOptionUpdate, Content, ContentBlock, ContentChunk, CurrentModeUpdate, EmbeddedResource,
-    EmbeddedResourceResource, FileSystemCapabilities, ForkSessionRequest, ForkSessionResponse,
-    ImageContent, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse,
-    LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer, Meta, NewSessionRequest,
-    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest,
-    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, ResourceLink,
-    SessionCapabilities, SessionCloseCapabilities, SessionConfigOption, SessionId, SessionInfo,
-    SessionInfoUpdate, SessionListCapabilities, SessionModeState, SessionModelState,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    AuthenticateResponse, BlobResourceContents, CancelNotification, CloseSessionRequest,
+    CloseSessionResponse, ConfigOptionUpdate, Content, ContentBlock, ContentChunk,
+    CurrentModeUpdate, EmbeddedResource, EmbeddedResourceResource, FileSystemCapabilities,
+    ForkSessionRequest, ForkSessionResponse, ImageContent, InitializeRequest, InitializeResponse,
+    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
+    McpCapabilities, McpServer, Meta, NewSessionRequest, NewSessionResponse, PermissionOption,
+    PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, ResourceLink, SessionCapabilities,
+    SessionCloseCapabilities, SessionConfigOption, SessionId, SessionInfo, SessionInfoUpdate,
+    SessionListCapabilities, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse,
     SetSessionModelRequest, SetSessionModelResponse, StopReason, TextContent, TextResourceContents,
     ToolCall, ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
-    ToolCallUpdateFields, ToolKind, UnstructuredCommandInput, Usage, UsageUpdate,
+    ToolCallUpdateFields, ToolKind, Usage, UsageUpdate,
 };
 use agent_client_protocol::util::MatchDispatchFrom;
 use agent_client_protocol::{
@@ -938,12 +938,12 @@ fn build_prompt_usage(session: &Session) -> Option<Usage> {
     Some(Usage::new(total, input, output))
 }
 
-struct UsageUpdates {
-    custom: GooseSessionNotification,
-    legacy: UsageUpdate,
+pub(super) struct UsageUpdates {
+    pub(super) custom: GooseSessionNotification,
+    pub(super) standard: UsageUpdate,
 }
 
-fn build_usage_updates(session: &Session) -> Option<UsageUpdates> {
+pub(super) fn build_usage_updates(session: &Session) -> Option<UsageUpdates> {
     let used = session.total_tokens.unwrap_or(0).max(0) as u64;
     let ctx_limit = session.model_config.as_ref()?.context_limit() as u64;
     let accumulated_input_tokens =
@@ -961,7 +961,7 @@ fn build_usage_updates(session: &Session) -> Option<UsageUpdates> {
                 accumulated_cost: session.accumulated_cost,
             }),
         },
-        legacy: UsageUpdate::new(used, ctx_limit),
+        standard: UsageUpdate::new(used, ctx_limit),
     })
 }
 
@@ -980,34 +980,6 @@ pub(super) fn validate_absolute_cwd(cwd: &Path) -> Result<(), agent_client_proto
 }
 
 impl GooseAcpAgent {
-    fn available_commands_update(working_dir: &std::path::Path) -> AvailableCommandsUpdate {
-        let commands = crate::slash_commands::slash_command::list_acp_commands(Some(working_dir))
-            .into_iter()
-            .map(|entry| {
-                let mut command = AvailableCommand::new(entry.name, entry.description);
-                if let Some(input_hint) = entry.input_hint {
-                    command = command.input(AvailableCommandInput::Unstructured(
-                        UnstructuredCommandInput::new(input_hint),
-                    ));
-                }
-                command
-            })
-            .collect();
-
-        AvailableCommandsUpdate::new(commands)
-    }
-
-    fn send_available_commands_update(
-        cx: &ConnectionTo<Client>,
-        session_id: &SessionId,
-        working_dir: &std::path::Path,
-    ) -> Result<(), agent_client_protocol::Error> {
-        cx.send_notification(SessionNotification::new(
-            session_id.clone(),
-            SessionUpdate::AvailableCommandsUpdate(Self::available_commands_update(working_dir)),
-        ))
-    }
-
     pub fn permission_manager(&self) -> Arc<PermissionManager> {
         Arc::clone(&self.permission_manager)
     }
@@ -1321,36 +1293,6 @@ impl GooseAcpAgent {
             .await;
 
         Ok((agent, extension_results))
-    }
-
-    async fn build_eager_session_config(
-        &self,
-        mode_state: &SessionModeState,
-        goose_session: &Session,
-    ) -> (Option<SessionModelState>, Option<Vec<SessionConfigOption>>) {
-        let (Some(provider_name), Some(model_config)) = (
-            goose_session.provider_name.as_deref(),
-            goose_session.model_config.as_ref(),
-        ) else {
-            return (None, None);
-        };
-        let Some(inventory) = self
-            .provider_inventory
-            .find_entry_for_provider(provider_name)
-            .await
-        else {
-            return (None, None);
-        };
-        let model_state = build_model_state(model_config.model_name.as_str(), &inventory);
-        let provider_selection = session_provider_selection(goose_session);
-        let provider_options = build_provider_options(Some(provider_name)).await;
-        let config_options = build_config_options(
-            mode_state,
-            &model_state,
-            provider_selection,
-            provider_options,
-        );
-        (Some(model_state), Some(config_options))
     }
 
     pub async fn has_session(&self, session_id: &str) -> bool {
@@ -2526,12 +2468,12 @@ impl GooseAcpAgent {
             .internal_err_ctx("Failed to load session")?;
         if let Some(updates) = build_usage_updates(&session) {
             cx.send_notification(updates.custom)?;
-            // Legacy ACP notification — emitted alongside the custom one for
+            // Standard ACP notification — emitted alongside the custom one for
             // backwards compatibility. Remove once all known clients have
             // migrated to `_goose/unstable/session/update`.
             cx.send_notification(SessionNotification::new(
                 args.session_id.clone(),
-                SessionUpdate::UsageUpdate(updates.legacy),
+                SessionUpdate::UsageUpdate(updates.standard),
             ))?;
         }
 
@@ -3747,8 +3689,8 @@ print(\"hello, world\")
         };
         assert_eq!(usage.used, 0);
         assert_eq!(usage.context_limit, 258_000);
-        assert_eq!(updates.legacy.used, 0);
-        assert_eq!(updates.legacy.size, 258_000);
+        assert_eq!(updates.standard.used, 0);
+        assert_eq!(updates.standard.size, 258_000);
     }
 
     #[test]

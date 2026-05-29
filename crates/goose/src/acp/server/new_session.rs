@@ -1,13 +1,9 @@
-use crate::acp::server::{
-    build_mode_state, build_usage_updates, meta_string, sid_short, validate_absolute_cwd, ResultExt,
-};
+use crate::acp::server::{meta_string, sid_short, validate_absolute_cwd, ResultExt};
 use crate::config::{Config, GooseMode};
 use crate::session::SessionType;
 
 use super::GooseAcpAgent;
-use agent_client_protocol::schema::{
-    NewSessionRequest, NewSessionResponse, SessionId, SessionNotification, SessionUpdate,
-};
+use agent_client_protocol::schema::{NewSessionRequest, NewSessionResponse, SessionId};
 use agent_client_protocol::{Client, ConnectionTo};
 use std::collections::HashMap;
 use tracing::debug;
@@ -77,14 +73,9 @@ impl GooseAcpAgent {
             .internal_err_ctx("Failed to reload session")?;
 
         let acp_session_id = SessionId::new(session_id_str.clone());
-        let working_dir = goose_session.working_dir.clone();
 
-        let mode_state = build_mode_state(goose_session.goose_mode)?;
-        let usage_updates = build_usage_updates(&goose_session);
-
-        let (model_state, config_options) = self
-            .build_eager_session_config(&mode_state, &goose_session)
-            .await;
+        let (mode_state, model_state, config_options) =
+            super::build_session_setup_config(&self.provider_inventory, &goose_session).await?;
 
         let mut response = NewSessionResponse::new(acp_session_id.clone()).modes(mode_state);
         if let Some(ms) = model_state {
@@ -98,14 +89,7 @@ impl GooseAcpAgent {
             meta.insert("extensionResults".to_string(), extension_results);
             response = response.meta(meta);
         }
-        if let Some(updates) = usage_updates {
-            cx.send_notification(updates.custom)?;
-            cx.send_notification(SessionNotification::new(
-                acp_session_id.clone(),
-                SessionUpdate::UsageUpdate(updates.legacy),
-            ))?;
-        }
-        Self::send_available_commands_update(cx, &acp_session_id, &working_dir)?;
+        super::send_session_setup_notifications(cx, &goose_session)?;
         debug!(
             target: "perf",
             sid = %sid,

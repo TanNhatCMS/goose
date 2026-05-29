@@ -227,20 +227,10 @@ impl GooseAcpAgent {
             .await
             .internal_err_ctx("Failed to reload session")?;
 
-        let mode_state = build_mode_state(session.goose_mode)?;
-        let usage_updates = build_usage_updates(&session);
-        let (model_state, config_options) =
-            self.build_eager_session_config(&mode_state, &session).await;
+        let (mode_state, model_state, config_options) =
+            build_session_setup_config(&self.provider_inventory, &session).await?;
 
-        if let Some(updates) = usage_updates {
-            cx.send_notification(updates.custom)?;
-            cx.send_notification(SessionNotification::new(
-                args.session_id.clone(),
-                SessionUpdate::UsageUpdate(updates.legacy),
-            ))?;
-        }
-
-        Self::send_available_commands_update(cx, &args.session_id, &session.working_dir)?;
+        send_session_setup_notifications(cx, &session)?;
 
         let mut response = LoadSessionResponse::new().modes(mode_state);
         if let Some(ms) = model_state {

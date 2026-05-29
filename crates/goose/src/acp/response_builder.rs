@@ -2,12 +2,15 @@ use crate::config::GooseMode;
 use crate::providers::inventory::{ProviderInventoryEntry, ProviderInventoryService};
 use crate::session::Session;
 use agent_client_protocol::schema::{
-    ModelId, ModelInfo, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOption, SessionMode, SessionModeId, SessionModeState, SessionModelState,
+    AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate, ModelId, ModelInfo,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption, SessionId,
+    SessionMode, SessionModeId, SessionModeState, SessionModelState, SessionNotification,
+    SessionUpdate, UnstructuredCommandInput,
 };
+use agent_client_protocol::{Client, ConnectionTo};
 use strum::{EnumMessage, VariantNames};
 
-use super::server::{DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_LABEL};
+use super::server::{build_usage_updates, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_LABEL};
 
 pub(super) fn session_provider_selection(session: &Session) -> &str {
     session
@@ -112,6 +115,43 @@ pub(super) fn build_mode_state(
     ))
 }
 
+pub(super) async fn build_session_setup_config(
+    provider_inventory: &ProviderInventoryService,
+    session: &Session,
+) -> Result<
+    (
+        SessionModeState,
+        Option<SessionModelState>,
+        Option<Vec<SessionConfigOption>>,
+    ),
+    agent_client_protocol::Error,
+> {
+    let mode_state = build_mode_state(session.goose_mode)?;
+
+    let (Some(provider_name), Some(model_config)) = (
+        session.provider_name.as_deref(),
+        session.model_config.as_ref(),
+    ) else {
+        return Ok((mode_state, None, None));
+    };
+    let Some(inventory) = provider_inventory
+        .find_entry_for_provider(provider_name)
+        .await
+    else {
+        return Ok((mode_state, None, None));
+    };
+    let model_state = build_model_state(model_config.model_name.as_str(), &inventory);
+    let provider_selection = session_provider_selection(session);
+    let provider_options = build_provider_options(Some(provider_name)).await;
+    let config_options = build_config_options(
+        &mode_state,
+        &model_state,
+        provider_selection,
+        provider_options,
+    );
+    Ok((mode_state, Some(model_state), Some(config_options)))
+}
+
 pub(super) fn build_config_options(
     mode_state: &SessionModeState,
     model_state: &SessionModelState,
@@ -153,6 +193,41 @@ pub(super) fn build_config_options(
         )
         .category(SessionConfigOptionCategory::Model),
     ]
+}
+
+fn available_commands_update(working_dir: &std::path::Path) -> AvailableCommandsUpdate {
+    let commands = crate::slash_commands::slash_command::list_acp_commands(Some(working_dir))
+        .into_iter()
+        .map(|entry| {
+            let mut command = AvailableCommand::new(entry.name, entry.description);
+            if let Some(input_hint) = entry.input_hint {
+                command = command.input(AvailableCommandInput::Unstructured(
+                    UnstructuredCommandInput::new(input_hint),
+                ));
+            }
+            command
+        })
+        .collect();
+
+    AvailableCommandsUpdate::new(commands)
+}
+
+pub(super) fn send_session_setup_notifications(
+    cx: &ConnectionTo<Client>,
+    session: &Session,
+) -> Result<(), agent_client_protocol::Error> {
+    let session_id = SessionId::new(session.id.clone());
+    if let Some(updates) = build_usage_updates(session) {
+        cx.send_notification(updates.custom)?;
+        cx.send_notification(SessionNotification::new(
+            session_id.clone(),
+            SessionUpdate::UsageUpdate(updates.standard),
+        ))?;
+    }
+    cx.send_notification(SessionNotification::new(
+        session_id,
+        SessionUpdate::AvailableCommandsUpdate(available_commands_update(&session.working_dir)),
+    ))
 }
 
 #[cfg(test)]
