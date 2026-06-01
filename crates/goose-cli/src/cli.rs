@@ -942,6 +942,7 @@ enum Command {
     },
 
     /// Update the goose CLI version
+    #[cfg(feature = "update")]
     #[command(about = "Update the goose CLI version")]
     Update {
         /// Update to canary version
@@ -1157,6 +1158,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Run { .. }) => "run",
         Some(Command::Gateway { .. }) => "gateway",
         Some(Command::Schedule { .. }) => "schedule",
+        #[cfg(feature = "update")]
         Some(Command::Update { .. }) => "update",
         Some(Command::Recipe { .. }) => "recipe",
         Some(Command::Plugin { .. }) => "plugin",
@@ -1718,6 +1720,7 @@ fn print_download_progress(manager: &goose::download_manager::DownloadManager) {
     std::io::stdout().flush().ok();
 }
 
+#[cfg(feature = "local-inference")]
 async fn handle_local_models_command(command: LocalModelsCommand) -> Result<()> {
     use goose::providers::local_inference::hf_models;
     use goose::providers::local_inference::local_model_registry::get_registry;
@@ -1967,6 +1970,7 @@ pub async fn cli() -> anyhow::Result<()> {
         }
         Some(Command::Gateway { command }) => handle_gateway_command(command).await,
         Some(Command::Schedule { command }) => handle_schedule_command(command).await,
+        #[cfg(feature = "update")]
         Some(Command::Update {
             canary,
             reconfigure,
