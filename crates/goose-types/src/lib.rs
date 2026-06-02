@@ -10,6 +10,7 @@ use unicode_normalization::UnicodeNormalization;
 
 pub mod conversation;
 pub mod errors;
+pub mod http_status;
 pub mod model;
 pub mod usage;
 

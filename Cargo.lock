@@ -4782,6 +4782,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tracing",
  "unicode-normalization",
+ "url",
  "utoipa 4.2.3",
  "uuid",
 ]

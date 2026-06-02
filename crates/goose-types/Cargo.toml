@@ -14,12 +14,13 @@ base64 = { workspace = true }
 chrono = { workspace = true, features = ["clock"] }
 goose-models-db = { path = "../goose-models-db", default-features = false }
 regex = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
 rmcp = { workspace = true, features = ["server"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+url = { workspace = true }
 unicode-normalization = { version = "0.1.22", default-features = false, features = ["std"] }
 utoipa = { workspace = true, features = ["chrono"] }
 uuid = { workspace = true }
