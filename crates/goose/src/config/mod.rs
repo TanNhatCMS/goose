@@ -2,9 +2,7 @@ pub mod base;
 pub mod declarative_providers;
 mod experiments;
 pub mod extensions;
-pub mod goose_mode {
-    pub use goose_providers::config::GooseMode;
-}
+pub mod goose_mode;
 mod migrations;
 pub mod paths;
 pub mod permission;

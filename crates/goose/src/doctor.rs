@@ -6,6 +6,7 @@ use crate::config::Config;
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
 use crate::providers::base::Provider;
+use crate::providers::mode::GooseProvider;
 use crate::providers::{self, errors::ProviderError};
 use crate::session::{
     config_path, latest_llm_log_path, latest_server_log_path, read_capped, read_tail, SystemInfo,
@@ -138,7 +139,7 @@ async fn ensure_developer_extension(agent: &crate::agents::Agent, session_id: &s
 async fn save_and_set(
     agent: &crate::agents::Agent,
     session_id: &str,
-    provider: Arc<dyn Provider>,
+    provider: Arc<dyn GooseProvider>,
 ) -> anyhow::Result<()> {
     let config = Config::global();
     crate::config::set_active_provider(
@@ -166,7 +167,7 @@ async fn test_provider(provider: &dyn Provider) -> Result<(), ProviderError> {
 async fn try_create_and_test(
     provider_name: &str,
     model_name: &str,
-) -> Result<Arc<dyn Provider>, ProviderError> {
+) -> Result<Arc<dyn GooseProvider>, ProviderError> {
     let model_config = ModelConfig::new(model_name)
         .map_err(|e| ProviderError::ExecutionError(e.to_string()))?
         .with_canonical_limits(provider_name);
@@ -183,7 +184,7 @@ async fn try_other_models(
     provider_name: &str,
     skip_model: &str,
     log: &mut Vec<String>,
-) -> Option<Arc<dyn Provider>> {
+) -> Option<Arc<dyn GooseProvider>> {
     let entry = providers::get_from_registry(provider_name).await.ok()?;
     let temp = entry.create_with_default_model(vec![]).await.ok()?;
     let models = temp.fetch_recommended_models().await.ok()?;
@@ -201,7 +202,7 @@ async fn try_other_models(
     None
 }
 
-async fn try_other_providers(skip: &str, log: &mut Vec<String>) -> Option<Arc<dyn Provider>> {
+async fn try_other_providers(skip: &str, log: &mut Vec<String>) -> Option<Arc<dyn GooseProvider>> {
     for (meta, _) in providers::providers().await {
         if meta.name == skip {
             continue;

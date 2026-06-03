@@ -4688,7 +4688,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "strum 0.27.2",
  "test-case",
  "thiserror 1.0.69",
  "tokio",

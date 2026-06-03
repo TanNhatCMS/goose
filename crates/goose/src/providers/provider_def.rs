@@ -6,11 +6,13 @@ use super::inventory::{
     default_inventory_configured, default_inventory_identity, InventoryIdentityInput,
 };
 use crate::config::{Config, ExtensionConfig};
-use goose_providers::base::{Provider, ProviderMetadata};
+use goose_providers::base::ProviderMetadata;
+
+use super::mode::GooseProvider;
 use goose_providers::model::ModelConfig;
 
 pub trait ProviderDef: Send + Sync {
-    type Provider: Provider + 'static;
+    type Provider: GooseProvider + 'static;
 
     fn metadata() -> ProviderMetadata
     where

@@ -1,5 +1,5 @@
 use crate::canonical::{map_to_canonical_model, CanonicalModelRegistry, Modality};
-use crate::config::{GooseMode, ProviderRuntime};
+use crate::config::ProviderRuntime;
 use crate::conversation::message::{Message, MessageContent};
 use crate::conversation::Conversation;
 use crate::errors::ProviderError;
@@ -1067,10 +1067,6 @@ pub trait Provider: Send + Sync {
         Err(ProviderError::NotImplemented(
             "credential refresh not supported by this provider".to_string(),
         ))
-    }
-
-    async fn update_mode(&self, _session_id: &str, _mode: GooseMode) -> Result<(), ProviderError> {
-        Ok(())
     }
 
     fn permission_routing(&self) -> PermissionRouting {

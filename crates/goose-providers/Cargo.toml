@@ -33,7 +33,6 @@ reqwest = { workspace = true }
 rmcp = { workspace = true, features = ["server"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-strum = { version = "0.27.1", default-features = false, features = ["derive", "std"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
