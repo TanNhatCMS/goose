@@ -9,7 +9,9 @@ pub mod builtin_extension;
 pub mod checks;
 pub mod config;
 pub mod context_mgmt;
-pub mod conversation;
+pub mod conversation {
+    pub use goose_providers::conversation::*;
+}
 pub mod dictation;
 pub mod doctor;
 pub mod download_manager;
@@ -20,8 +22,12 @@ pub mod hints;
 pub mod hooks;
 pub mod instance_id;
 pub mod logging;
-pub mod mcp_utils;
-pub mod model;
+pub mod mcp_utils {
+    pub use goose_providers::mcp_utils::*;
+}
+pub mod model {
+    pub use goose_providers::model::*;
+}
 pub mod oauth;
 #[cfg(feature = "otel")]
 pub mod otel;

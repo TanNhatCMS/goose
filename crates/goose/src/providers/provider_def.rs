@@ -1,11 +1,3 @@
-pub use goose_providers::base::{
-    collect_stream, current_working_dir, get_current_model, set_current_model, split_think_blocks,
-    stream_from_single_message, ConfigKey, ConfigValue, FilterOut, MessageStream, ModelInfo,
-    PermissionRouting, Provider, ProviderInit, ProviderMetadata, ProviderType, ProviderUsage,
-    ThinkFilter, Usage, CURRENT_MODEL, DEFAULT_PROVIDER_TIMEOUT_SECS,
-    MSG_COUNT_FOR_SESSION_NAME_GENERATION,
-};
-
 use anyhow::Result;
 use futures::future::BoxFuture;
 use std::path::PathBuf;
@@ -14,7 +6,8 @@ use super::inventory::{
     default_inventory_configured, default_inventory_identity, InventoryIdentityInput,
 };
 use crate::config::{Config, ExtensionConfig};
-use crate::model::ModelConfig;
+use goose_providers::base::{Provider, ProviderMetadata};
+use goose_providers::model::ModelConfig;
 
 pub trait ProviderDef: Send + Sync {
     type Provider: Provider + 'static;

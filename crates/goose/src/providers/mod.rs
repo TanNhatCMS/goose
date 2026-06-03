@@ -5,10 +5,15 @@ pub mod api_client;
 pub mod avian;
 pub mod azure;
 pub mod azureauth;
-pub mod base;
+pub mod base {
+    pub use super::provider_def::ProviderDef;
+    pub use goose_providers::base::*;
+}
 #[cfg(feature = "aws-providers")]
 pub mod bedrock;
-pub mod canonical;
+pub mod canonical {
+    pub use goose_providers::canonical::*;
+}
 pub mod catalog;
 pub mod chatgpt_codex;
 pub mod claude_acp;
@@ -22,7 +27,9 @@ pub mod databricks;
 pub mod databricks_auth;
 pub mod databricks_v2;
 pub mod embedding;
-pub mod errors;
+pub mod errors {
+    pub use goose_providers::errors::*;
+}
 pub mod formats;
 mod gcpauth;
 pub mod gcpvertexai;
@@ -47,9 +54,12 @@ pub mod openai;
 pub mod openai_compatible;
 pub mod openrouter;
 pub mod pi_acp;
+mod provider_def;
 pub mod provider_registry;
 pub mod provider_test;
-mod retry;
+pub mod retry {
+    pub use goose_providers::retry::*;
+}
 pub mod runtime;
 #[cfg(feature = "aws-providers")]
 pub mod sagemaker_tgi;
