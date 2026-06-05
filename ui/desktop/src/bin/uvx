@@ -31,7 +31,14 @@ fi
 MCP_HERMIT_DIR="${RESOLVED_GOOSE_CONFIG_DIR}/mcp-hermit"
 mkdir -p "${RESOLVED_GOOSE_CONFIG_DIR}"
 HERMIT_SETUP_LOCK_DIR="${RESOLVED_GOOSE_CONFIG_DIR}/.mcp-hermit-setup.lock"
+HERMIT_SETUP_LOCK_TIMEOUT=300
+HERMIT_SETUP_LOCK_STARTED_AT=$(date +%s)
 while ! mkdir "${HERMIT_SETUP_LOCK_DIR}" 2>/dev/null; do
+    if [ $(( $(date +%s) - HERMIT_SETUP_LOCK_STARTED_AT )) -ge "${HERMIT_SETUP_LOCK_TIMEOUT}" ]; then
+        log "Timed out waiting for ${HERMIT_SETUP_LOCK_DIR}; removing stale lock."
+        rm -rf "${HERMIT_SETUP_LOCK_DIR}"
+        HERMIT_SETUP_LOCK_STARTED_AT=$(date +%s)
+    fi
     sleep 0.1
 done
 trap 'rm -rf "${HERMIT_SETUP_LOCK_DIR}"; log "An error occurred. Exiting with status $?."' ERR
