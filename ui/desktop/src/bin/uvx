@@ -38,7 +38,7 @@ trap 'rm -rf "${HERMIT_SETUP_LOCK_DIR}"; log "An error occurred. Exiting with st
 trap 'rm -rf "${HERMIT_SETUP_LOCK_DIR}"' EXIT
 
 # One-time cleanup for existing Linux users to fix locking issues
-CLEANUP_MARKER="${RESOLVED_GOOSE_CONFIG_DIR}/.mcp-hermit-uvx-cleanup-v1"
+CLEANUP_MARKER="${RESOLVED_GOOSE_CONFIG_DIR}/.mcp-hermit-cleanup-v1"
 if [[ "$(uname -s)" == "Linux" ]] && [ ! -f "${CLEANUP_MARKER}" ]; then
     log "Performing one-time cleanup of old mcp-hermit directory to fix locking issues."
     if [ -d "${MCP_HERMIT_DIR}" ]; then
