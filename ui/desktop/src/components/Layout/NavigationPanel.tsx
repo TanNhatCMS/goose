@@ -192,7 +192,7 @@ export const Navigation: React.FC<{ className?: string }> = ({ className }) => {
       className={cn('bg-background-primary outline-none flex flex-col h-full', className)}
     >
       {/* Top spacer clears the macOS traffic lights and shared app top bar. */}
-      <div className="h-[60px] no-drag" />
+      <div className="h-[48px] no-drag" />
 
       {/* Nav items */}
       <div className="px-2 flex flex-col gap-0.5">
