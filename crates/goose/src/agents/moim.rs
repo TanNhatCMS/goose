@@ -51,18 +51,22 @@ pub async fn inject_moim(
         .get_session(session_id, false)
         .await
         .ok();
-    let provider_context_limit = extension_manager
-        .get_provider()
-        .try_lock()
-        .ok()
-        .and_then(|provider| {
-            provider
-                .as_ref()
-                .map(|provider| provider.get_model_config().context_limit())
-        });
-    let session_context_limit = session
-        .as_ref()
-        .and_then(|session| session.model_config.as_ref().map(|config| config.context_limit()));
+    let provider_context_limit =
+        extension_manager
+            .get_provider()
+            .try_lock()
+            .ok()
+            .and_then(|provider| {
+                provider
+                    .as_ref()
+                    .map(|provider| provider.get_model_config().context_limit())
+            });
+    let session_context_limit = session.as_ref().and_then(|session| {
+        session
+            .model_config
+            .as_ref()
+            .map(|config| config.context_limit())
+    });
     let context_limit = provider_context_limit.or(session_context_limit);
     if should_skip_moim(context_limit) {
         return conversation;
@@ -142,7 +146,9 @@ fn compose_moim(
         tag("working-directory", &working_dir.display().to_string()),
     ];
 
-    if let Some(value) = compaction_remaining_line(total_tokens, context_limit, compaction_threshold) {
+    if let Some(value) =
+        compaction_remaining_line(total_tokens, context_limit, compaction_threshold)
+    {
         lines.push(tag("compaction", &value));
     }
     if let Some(value) = turn_budget_line(turns_taken, max_turns) {
@@ -348,5 +354,4 @@ mod tests {
         ));
         assert_eq!(msgs[2].content.len(), 1);
     }
-
 }
