@@ -90,7 +90,7 @@ pub async fn inject_moim(
     let mut messages = conversation.messages().clone();
     let Some(idx) = messages
         .iter()
-        .rposition(|m| effective_role(m) == "user")
+        .rposition(|m| m.is_agent_visible() && effective_role(m) == "user")
     else {
         return conversation;
     };
@@ -279,6 +279,36 @@ mod tests {
         assert_eq!(result.messages().len(), 1);
         assert!(is_moim(&result.messages()[0].content[0]));
         assert_eq!(text_at(&result.messages()[0], 1), "Hello");
+    }
+
+    #[tokio::test]
+    async fn test_moim_skips_user_messages_not_visible_to_agent() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let session = em
+            .get_context()
+            .session_manager
+            .create_session(
+                PathBuf::from("/test/dir"),
+                "test".to_string(),
+                crate::session::SessionType::User,
+                crate::config::GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        let conv = Conversation::new_unvalidated(vec![
+            Message::user().with_text("agent visible"),
+            Message::assistant().with_text("reply"),
+            Message::user().with_text("user only").user_only(),
+        ]);
+        let result = inject_moim(&session.id, conv, &em, 0, 100).await;
+        let msgs = result.messages();
+
+        assert_eq!(msgs.len(), 3);
+        assert!(is_moim(&msgs[0].content[0]));
+        assert_eq!(text_at(&msgs[0], 1), "agent visible");
+        assert_eq!(text_at(&msgs[2], 0), "user only");
     }
 
     #[tokio::test]
