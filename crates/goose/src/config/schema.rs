@@ -38,9 +38,9 @@ pub struct GooseConfigSchema {
     #[serde(rename = "GOOSE_MAX_TOKENS")]
     pub goose_max_tokens: Option<i32>,
     #[serde(rename = "GOOSE_CONTEXT_LIMIT")]
-    pub goose_context_limit: Option<u32>,
+    pub goose_context_limit: Option<u64>,
     #[serde(rename = "GOOSE_INPUT_LIMIT")]
-    pub goose_input_limit: Option<u32>,
+    pub goose_input_limit: Option<u64>,
     #[serde(rename = "GOOSE_MAX_TURNS")]
     pub goose_max_turns: Option<u32>,
     #[serde(rename = "GOOSE_MAX_ACTIVE_AGENTS")]
@@ -52,7 +52,7 @@ pub struct GooseConfigSchema {
     #[serde(rename = "GOOSE_TOOL_CALL_CUTOFF")]
     pub goose_tool_call_cutoff: Option<u32>,
     #[serde(rename = "GOOSE_STREAM_TIMEOUT")]
-    pub goose_stream_timeout: Option<u32>,
+    pub goose_stream_timeout: Option<u64>,
     #[serde(rename = "GOOSE_SEARCH_PATHS")]
     pub goose_search_paths: Option<Vec<String>>,
     #[serde(rename = "GOOSE_DISABLE_SESSION_NAMING")]
@@ -62,7 +62,7 @@ pub struct GooseConfigSchema {
     #[serde(rename = "GOOSE_TELEMETRY_ENABLED")]
     pub goose_telemetry_enabled: Option<bool>,
     #[serde(rename = "GOOSE_DEFAULT_EXTENSION_TIMEOUT")]
-    pub goose_default_extension_timeout: Option<u32>,
+    pub goose_default_extension_timeout: Option<u64>,
     #[serde(rename = "GOOSE_PROMPT_EDITOR")]
     pub goose_prompt_editor: Option<String>,
     #[serde(rename = "GOOSE_PROMPT_EDITOR_ALWAYS")]
@@ -118,9 +118,9 @@ pub struct GooseConfigSchema {
     #[serde(rename = "GOOSE_RECIPE_GITHUB_REPO")]
     pub goose_recipe_github_repo: Option<String>,
     #[serde(rename = "GOOSE_RECIPE_RETRY_TIMEOUT_SECONDS")]
-    pub goose_recipe_retry_timeout_seconds: Option<u32>,
+    pub goose_recipe_retry_timeout_seconds: Option<u64>,
     #[serde(rename = "GOOSE_RECIPE_ON_FAILURE_TIMEOUT_SECONDS")]
-    pub goose_recipe_on_failure_timeout_seconds: Option<u32>,
+    pub goose_recipe_on_failure_timeout_seconds: Option<u64>,
 
     // === CLI Settings ===
     #[serde(rename = "GOOSE_CLI_MIN_PRIORITY")]
@@ -196,15 +196,15 @@ pub struct GooseConfigSchema {
     #[serde(rename = "OPENAI_PROJECT")]
     pub openai_project: Option<String>,
     #[serde(rename = "OPENAI_TIMEOUT")]
-    pub openai_timeout: Option<u32>,
+    pub openai_timeout: Option<u64>,
     #[serde(rename = "ANTHROPIC_HOST")]
     pub anthropic_host: Option<String>,
     #[serde(rename = "OLLAMA_HOST")]
     pub ollama_host: Option<String>,
     #[serde(rename = "OLLAMA_TIMEOUT")]
-    pub ollama_timeout: Option<u32>,
+    pub ollama_timeout: Option<u64>,
     #[serde(rename = "OLLAMA_STREAM_TIMEOUT")]
-    pub ollama_stream_timeout: Option<u32>,
+    pub ollama_stream_timeout: Option<u64>,
     #[serde(rename = "OLLAMA_STREAM_USAGE")]
     pub ollama_stream_usage: Option<bool>,
     #[serde(rename = "DATABRICKS_HOST")]
@@ -274,13 +274,13 @@ pub struct GooseConfigSchema {
     #[serde(rename = "AWS_PROFILE")]
     pub aws_profile: Option<String>,
     #[serde(rename = "BEDROCK_MAX_RETRIES")]
-    pub bedrock_max_retries: Option<u32>,
+    pub bedrock_max_retries: Option<u64>,
     #[serde(rename = "BEDROCK_INITIAL_RETRY_INTERVAL_MS")]
-    pub bedrock_initial_retry_interval_ms: Option<u32>,
+    pub bedrock_initial_retry_interval_ms: Option<u64>,
     #[serde(rename = "BEDROCK_BACKOFF_MULTIPLIER")]
     pub bedrock_backoff_multiplier: Option<f64>,
     #[serde(rename = "BEDROCK_MAX_RETRY_INTERVAL_MS")]
-    pub bedrock_max_retry_interval_ms: Option<u32>,
+    pub bedrock_max_retry_interval_ms: Option<u64>,
     #[serde(rename = "BEDROCK_ENABLE_CACHING")]
     pub bedrock_enable_caching: Option<bool>,
     #[serde(rename = "SAGEMAKER_ENDPOINT_NAME")]
@@ -290,7 +290,7 @@ pub struct GooseConfigSchema {
     #[serde(rename = "LITELLM_BASE_PATH")]
     pub litellm_base_path: Option<String>,
     #[serde(rename = "LITELLM_TIMEOUT")]
-    pub litellm_timeout: Option<u32>,
+    pub litellm_timeout: Option<u64>,
     #[serde(rename = "SNOWFLAKE_HOST")]
     pub snowflake_host: Option<String>,
     #[serde(rename = "GITHUB_COPILOT_HOST")]
@@ -321,7 +321,7 @@ pub struct GooseConfigSchema {
 
     // === Observability Settings (lowercase keys) ===
     pub otel_exporter_otlp_endpoint: Option<String>,
-    pub otel_exporter_otlp_timeout: Option<u32>,
+    pub otel_exporter_otlp_timeout: Option<u64>,
 
     // === Tunnel Settings (lowercase keys) ===
     pub tunnel_auto_start: Option<bool>,

@@ -1495,13 +1495,13 @@ pub struct ConfigSchemaDto {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub goose_context_limit: Option<u32>,
+    pub goose_context_limit: Option<u64>,
     #[serde(
         rename = "GOOSE_INPUT_LIMIT",
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub goose_input_limit: Option<u32>,
+    pub goose_input_limit: Option<u64>,
     #[serde(
         rename = "GOOSE_MAX_TURNS",
         default,
@@ -1537,7 +1537,7 @@ pub struct ConfigSchemaDto {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub goose_stream_timeout: Option<u32>,
+    pub goose_stream_timeout: Option<u64>,
     #[serde(
         rename = "GOOSE_SEARCH_PATHS",
         default,
@@ -1567,7 +1567,7 @@ pub struct ConfigSchemaDto {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub goose_default_extension_timeout: Option<u32>,
+    pub goose_default_extension_timeout: Option<u64>,
     #[serde(
         rename = "GOOSE_PROMPT_EDITOR",
         default,
@@ -1719,13 +1719,13 @@ pub struct ConfigSchemaDto {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub goose_recipe_retry_timeout_seconds: Option<u32>,
+    pub goose_recipe_retry_timeout_seconds: Option<u64>,
     #[serde(
         rename = "GOOSE_RECIPE_ON_FAILURE_TIMEOUT_SECONDS",
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub goose_recipe_on_failure_timeout_seconds: Option<u32>,
+    pub goose_recipe_on_failure_timeout_seconds: Option<u64>,
 
     // === CLI Settings ===
     #[serde(
@@ -1937,7 +1937,7 @@ pub struct ConfigSchemaDto {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub openai_timeout: Option<u32>,
+    pub openai_timeout: Option<u64>,
     #[serde(
         rename = "ANTHROPIC_HOST",
         default,
@@ -1955,13 +1955,13 @@ pub struct ConfigSchemaDto {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub ollama_timeout: Option<u32>,
+    pub ollama_timeout: Option<u64>,
     #[serde(
         rename = "OLLAMA_STREAM_TIMEOUT",
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub ollama_stream_timeout: Option<u32>,
+    pub ollama_stream_timeout: Option<u64>,
     #[serde(
         rename = "OLLAMA_STREAM_USAGE",
         default,
@@ -2075,13 +2075,13 @@ pub struct ConfigSchemaDto {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub bedrock_max_retries: Option<u32>,
+    pub bedrock_max_retries: Option<u64>,
     #[serde(
         rename = "BEDROCK_INITIAL_RETRY_INTERVAL_MS",
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub bedrock_initial_retry_interval_ms: Option<u32>,
+    pub bedrock_initial_retry_interval_ms: Option<u64>,
     #[serde(
         rename = "BEDROCK_BACKOFF_MULTIPLIER",
         default,
@@ -2093,7 +2093,7 @@ pub struct ConfigSchemaDto {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub bedrock_max_retry_interval_ms: Option<u32>,
+    pub bedrock_max_retry_interval_ms: Option<u64>,
     #[serde(
         rename = "BEDROCK_ENABLE_CACHING",
         default,
@@ -2123,7 +2123,7 @@ pub struct ConfigSchemaDto {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub litellm_timeout: Option<u32>,
+    pub litellm_timeout: Option<u64>,
     #[serde(
         rename = "SNOWFLAKE_HOST",
         default,
@@ -2197,7 +2197,7 @@ pub struct ConfigSchemaDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otel_exporter_otlp_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub otel_exporter_otlp_timeout: Option<u32>,
+    pub otel_exporter_otlp_timeout: Option<u64>,
 
     // === Tunnel Settings (lowercase keys) ===
     #[serde(default, skip_serializing_if = "Option::is_none")]

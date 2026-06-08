@@ -71,7 +71,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "BEDROCK_MAX_RETRIES": {
@@ -79,7 +79,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "BEDROCK_MAX_RETRY_INTERVAL_MS": {
@@ -87,7 +87,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "CHATGPT_CODEX_REASONING_EFFORT": {
@@ -368,7 +368,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "GOOSE_DATABRICKS_CLIENT_REQUEST_ID": {
@@ -388,7 +388,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "GOOSE_DISABLE_KEYRING": {
@@ -414,7 +414,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "GOOSE_LOCAL_ENABLE_THINKING": {
@@ -511,7 +511,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "GOOSE_RECIPE_RETRY_TIMEOUT_SECONDS": {
@@ -519,7 +519,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "GOOSE_SEARCH_PATHS": {
@@ -548,7 +548,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "GOOSE_SUBAGENT_MAX_TURNS": {
@@ -626,7 +626,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "OLLAMA_HOST": {
@@ -640,7 +640,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "OLLAMA_STREAM_USAGE": {
@@ -654,7 +654,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "OPENAI_BASE_PATH": {
@@ -692,7 +692,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "OPENROUTER_HOST": {
@@ -821,7 +821,7 @@
         "integer",
         "null"
       ],
-      "format": "uint32",
+      "format": "uint64",
       "minimum": 0
     },
     "providers": {
