@@ -69,17 +69,28 @@ prompt: |
 
   ## step 3: read the task spec
 
-  the task definition lives in harbor's task cache. layout is
-  `~/.cache/harbor/tasks/<org>/<name>/<digest>/<task>/`. the digest
-  changes per dataset version, so discover it:
+  the task definition lives in harbor's task cache. package-backed tasks
+  (the common case, including all of terminal-bench-2) land under
+  `~/.cache/harbor/tasks/packages/<org>/<task>/<digest>/`. the digest is
+  per task version and changes when the task is republished, so discover
+  the directory rather than guessing:
 
   ```
-  TASK_DIR=$(find ~/.cache/harbor/tasks -type d -name "{{ task }}" \
-    -path "*/terminal-bench/terminal-bench-2/*" 2>/dev/null | head -1)
+  TASK_DIR=$(ls -d ~/.cache/harbor/tasks/packages/terminal-bench/{{ task }}/*/ 2>/dev/null | head -1)
+  echo "$TASK_DIR"
   ls "$TASK_DIR"
   ```
 
-  if that's empty the dataset isn't cached locally — say so and continue
+  if that's empty, fall back to a broader search in case the task came
+  from a git source or a different org. note that `find` returns the
+  parent (one level above the digest), so descend one more level:
+
+  ```
+  PARENT=$(find ~/.cache/harbor/tasks -type d -name "{{ task }}" 2>/dev/null | head -1)
+  TASK_DIR=$(ls -d "$PARENT"/*/ 2>/dev/null | head -1)
+  ```
+
+  if both come up empty the task isn't cached locally — say so and continue
   with what you can learn from the trial dirs alone (the verifier stdout
   often reveals what was being checked).
 

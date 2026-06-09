@@ -105,27 +105,41 @@ Harbor caches under `~/.cache/harbor/` on every platform (it uses
 `Path("~/.cache/harbor").expanduser()` unconditionally — there is no
 `~/Library/Caches/harbor` on macOS, despite what you might expect).
 
-The layout is:
+The on-disk layout for package-backed tasks (the common case — everything
+in `terminal-bench/terminal-bench-2` lands here) is:
 
-- `~/.cache/harbor/tasks/<org>/<name>/<digest>/<task>/` — the actual task
-  files (`instruction.md`, `tests/`, `solution/`)
-- `~/.cache/harbor/datasets/<org>/<name>/<version>/` — dataset-level
-  metadata (not what you want here)
+```
+~/.cache/harbor/tasks/packages/<org>/<task>/<digest>/
+```
 
-The `<digest>` segment changes per dataset version, so don't hardcode it;
-discover the task dir by searching:
+Note: no dataset name in the path. Tasks are keyed by org + task name +
+content digest, not by which dataset pulled them. The `<digest>` segment
+changes when the task is republished, so discover the dir rather than
+hardcoding:
 
 ```bash
-TASK_DIR=$(find ~/.cache/harbor/tasks -type d -name "$TASK" \
-  -path "*/terminal-bench/terminal-bench-2/*" 2>/dev/null | head -1)
+TASK_DIR=$(ls -d ~/.cache/harbor/tasks/packages/terminal-bench/"$TASK"/*/ 2>/dev/null | head -1)
 echo "$TASK_DIR"
 ls "$TASK_DIR"
 ```
 
-If that's empty, the dataset hasn't been downloaded on this machine — bail
-out and report that, rather than guessing. (Runs sync via `cmd.py pull` but
-the dataset cache does not, so a machine that only inspects results may
-never have the task spec locally.)
+If that's empty, the task could be from a different org or a git source —
+broaden the search. `find` returns the parent (one level above the
+digest), so descend one more level:
+
+```bash
+PARENT=$(find ~/.cache/harbor/tasks -type d -name "$TASK" 2>/dev/null | head -1)
+TASK_DIR=$(ls -d "$PARENT"/*/ 2>/dev/null | head -1)
+```
+
+If both lookups come up empty, the task hasn't been downloaded on this
+machine — bail out and report that, rather than guessing. (Runs sync via
+`cmd.py pull` but the task cache does not, so a machine that only inspects
+results may never have the spec locally.)
+
+`~/.cache/harbor/datasets/` exists too but holds dataset-level metadata,
+not the per-task `instruction.md` / `tests/` / `solution/` files — not
+what you want here.
 
 Inside, you care about three files:
 
