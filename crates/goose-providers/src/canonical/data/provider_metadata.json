@@ -52,7 +52,7 @@
     "env": [
       "FIREWORKS_API_KEY"
     ],
-    "model_count": 12
+    "model_count": 13
   },
   {
     "id": "ambient",
@@ -118,7 +118,7 @@
     "env": [
       "NANO_GPT_API_KEY"
     ],
-    "model_count": 525
+    "model_count": 617
   },
   {
     "id": "alibaba-cn",
@@ -129,7 +129,7 @@
     "env": [
       "DASHSCOPE_API_KEY"
     ],
-    "model_count": 82
+    "model_count": 83
   },
   {
     "id": "digitalocean",
@@ -169,7 +169,7 @@
     "display_name": "Kimi For Coding",
     "npm": "@ai-sdk/anthropic",
     "api": "https://api.kimi.com/coding/v1",
-    "doc": "https://www.kimi.com/coding/docs/en/third-party-agents.html",
+    "doc": "https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html",
     "env": [
       "KIMI_API_KEY"
     ],
@@ -327,7 +327,7 @@
     "env": [
       "DASHSCOPE_API_KEY"
     ],
-    "model_count": 50
+    "model_count": 51
   },
   {
     "id": "xiaomi",
@@ -484,7 +484,7 @@
     "env": [
       "LLMGATEWAY_API_KEY"
     ],
-    "model_count": 189
+    "model_count": 191
   },
   {
     "id": "moark",
@@ -539,7 +539,7 @@
     "env": [
       "ZENMUX_API_KEY"
     ],
-    "model_count": 96
+    "model_count": 107
   },
   {
     "id": "claudinio",
@@ -671,7 +671,7 @@
     "env": [
       "NVIDIA_API_KEY"
     ],
-    "model_count": 93
+    "model_count": 94
   },
   {
     "id": "routing-run",
@@ -718,6 +718,17 @@
     "model_count": 17
   },
   {
+    "id": "freemodel",
+    "display_name": "FreeModel",
+    "npm": "@ai-sdk/anthropic",
+    "api": "https://cc.freemodel.dev/v1",
+    "doc": "https://freemodel.dev",
+    "env": [
+      "FREEMODEL_API_KEY"
+    ],
+    "model_count": 9
+  },
+  {
     "id": "lilac",
     "display_name": "Lilac",
     "npm": "@ai-sdk/openai-compatible",
@@ -730,7 +741,7 @@
   },
   {
     "id": "stepfun-ai",
-    "display_name": "StepFun",
+    "display_name": "StepFun AI",
     "npm": "@ai-sdk/openai-compatible",
     "api": "https://api.stepfun.ai/step_plan/v1",
     "doc": "https://platform.stepfun.ai/docs/en/step-plan/integrations/open-code",
@@ -759,7 +770,7 @@
     "env": [
       "OPENCODE_API_KEY"
     ],
-    "model_count": 16
+    "model_count": 17
   },
   {
     "id": "cortecs",
@@ -770,7 +781,7 @@
     "env": [
       "CORTECS_API_KEY"
     ],
-    "model_count": 49
+    "model_count": 50
   },
   {
     "id": "auriko",
@@ -829,7 +840,7 @@
   },
   {
     "id": "stepfun",
-    "display_name": "StepFun (China)",
+    "display_name": "StepFun",
     "npm": "@ai-sdk/openai-compatible",
     "api": "https://api.stepfun.com/v1",
     "doc": "https://platform.stepfun.com/docs/zh/overview/concept",
@@ -957,7 +968,7 @@
     "env": [
       "XPERSONA_API_KEY"
     ],
-    "model_count": 1
+    "model_count": 2
   },
   {
     "id": "perplexity-agent",
@@ -1111,7 +1122,7 @@
     "env": [
       "OPENCODE_API_KEY"
     ],
-    "model_count": 66
+    "model_count": 67
   },
   {
     "id": "poolside",
@@ -1180,6 +1191,17 @@
     "model_count": 3
   },
   {
+    "id": "alibaba-token-plan",
+    "display_name": "Alibaba Token Plan",
+    "npm": "@ai-sdk/openai-compatible",
+    "api": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+    "doc": "https://www.alibabacloud.com/help/en/model-studio/token-plan-overview",
+    "env": [
+      "ALIBABA_TOKEN_PLAN_API_KEY"
+    ],
+    "model_count": 15
+  },
+  {
     "id": "tencent-tokenhub",
     "display_name": "Tencent TokenHub",
     "npm": "@ai-sdk/openai-compatible",
@@ -1199,7 +1221,7 @@
     "env": [
       "ALIBABA_CODING_PLAN_API_KEY"
     ],
-    "model_count": 11
+    "model_count": 12
   },
   {
     "id": "cloudflare-workers-ai",
