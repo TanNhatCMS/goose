@@ -19,7 +19,7 @@ use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 14;
+pub const CURRENT_SCHEMA_VERSION: i32 = 15;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -762,6 +762,7 @@ impl SessionStorage {
 
                 if schema_exists {
                     Self::run_migrations(&self.pool).await?;
+                    Self::ensure_last_message_snippet_column(&self.pool).await?;
                 } else {
                     Self::create_schema(&self.pool).await?;
                     if let Err(e) = Self::import_legacy(&self.pool, &self.session_dir).await {
@@ -1020,6 +1021,33 @@ impl SessionStorage {
         Ok(())
     }
 
+    /// Self-healing presence check for `last_message_snippet`, run on every
+    /// startup for an existing DB regardless of the recorded `schema_version`.
+    ///
+    /// The column is normally added by migration v15, but the version gate can
+    /// be defeated by a numbering collision: two branches independently claimed
+    /// v14 (this one for the snippet, send-personas for
+    /// `client_system_prompt_json`), so a DB already stamped at our version
+    /// skips the migration loop and never gains the column. The SELECTs name
+    /// `last_message_snippet` explicitly, so they fail outright before FromRow's
+    /// defensive `try_get` ever runs. An unconditional `ADD COLUMN` guarded only
+    /// by the column's presence cannot be skipped by a stale version number, so
+    /// it closes that hole for good. Idempotent: a no-op once the column exists.
+    async fn ensure_last_message_snippet_column(pool: &Pool<Sqlite>) -> Result<()> {
+        let has_column = sqlx::query_scalar::<_, i32>(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'last_message_snippet'",
+        )
+        .fetch_one(pool)
+        .await?
+            > 0;
+        if !has_column {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN last_message_snippet TEXT")
+                .execute(pool)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn get_schema_version(tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<i32> {
         let table_exists = sqlx::query_scalar::<_, bool>(
             r#"
@@ -1274,6 +1302,14 @@ impl SessionStorage {
                 }
             }
             14 => {
+                // Reserved: v14 was claimed independently by a sibling branch
+                // (send-personas, for `client_system_prompt_json`) at the same
+                // time this branch tried to use it for `last_message_snippet`.
+                // To avoid two branches asserting different schemas at v14, this
+                // branch no longer owns v14 — the snippet column moved to v15.
+                // Left as a no-op so a v13 DB still steps cleanly through to v15.
+            }
+            15 => {
                 let has_last_message_snippet = sqlx::query_scalar::<_, i32>(
                     "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'last_message_snippet'",
                 )
@@ -3239,6 +3275,187 @@ mod tests {
 
         let acp_session = sm.storage().get_session("acp_id", false).await.unwrap();
         assert_eq!(acp_session.session_type, SessionType::Acp);
+    }
+
+    /// Builds a `sessions` DB whose table predates `last_message_snippet` and
+    /// stamps `schema_version` at `version`. `create_schema` can't produce this
+    /// fixture — it always declares every modern column — so the pre-snippet
+    /// shape is spelled out explicitly. When `with_client_system_prompt` is set
+    /// the table also carries `client_system_prompt_json`, the column the
+    /// colliding send-personas branch added at its own v14, faithfully
+    /// reproducing the affected user's DB.
+    async fn seed_pre_snippet_sessions_db(
+        db_path: &Path,
+        version: i32,
+        with_client_system_prompt: bool,
+    ) {
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let pool = SqlitePoolOptions::new()
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(db_path)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+            .bind(version)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let client_prompt_col = if with_client_system_prompt {
+            ",\n                client_system_prompt_json TEXT"
+        } else {
+            ""
+        };
+        sqlx::query(&format!(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                user_set_name BOOLEAN DEFAULT FALSE,
+                session_type TEXT NOT NULL DEFAULT 'user',
+                working_dir TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                extension_data TEXT DEFAULT '{{}}',
+                total_tokens INTEGER,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                accumulated_total_tokens INTEGER,
+                accumulated_input_tokens INTEGER,
+                accumulated_output_tokens INTEGER,
+                accumulated_cost REAL,
+                schedule_id TEXT,
+                recipe_json TEXT,
+                user_recipe_values_json TEXT,
+                provider_name TEXT,
+                model_config_json TEXT,
+                goose_mode TEXT NOT NULL DEFAULT 'auto',
+                archived_at TIMESTAMP,
+                project_id TEXT{client_prompt_col}
+            )"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id TEXT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                content_json TEXT NOT NULL,
+                created_timestamp INTEGER NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                tokens INTEGER,
+                metadata_json TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO sessions (id, name, user_set_name, session_type, working_dir, extension_data, goose_mode)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("legacy_id")
+        .bind("Legacy Session")
+        .bind(false)
+        .bind("user")
+        .bind("/tmp")
+        .bind("{}")
+        .bind("auto")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let has_snippet = sqlx::query_scalar::<_, i32>(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'last_message_snippet'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(has_snippet, 0, "fixture must not have last_message_snippet");
+
+        pool.close().await;
+    }
+
+    /// The SELECTs in `list_sessions_matching` and `get_session` both name
+    /// `s.last_message_snippet` explicitly. Before the fix, opening a DB whose
+    /// table lacked the column made them fail with `no such column:
+    /// last_message_snippet`. After the fix the column has been added (by the
+    /// v15 migration and/or the self-healing guard), so both succeed.
+    async fn assert_snippet_queries_succeed(sm: &SessionManager) {
+        let sessions = sm
+            .storage()
+            .list_sessions_matching(SessionListQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].last_message_snippet, None);
+
+        let session = sm.get_session("legacy_id", false).await.unwrap();
+        assert_eq!(session.last_message_snippet, None);
+
+        let has_column = sqlx::query_scalar::<_, i32>(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'last_message_snippet'",
+        )
+        .fetch_one(sm.storage().pool().await.unwrap())
+        .await
+        .unwrap();
+        assert_eq!(has_column, 1);
+    }
+
+    #[tokio::test]
+    async fn test_snippet_migration_upgrades_v13_db() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        seed_pre_snippet_sessions_db(&db_path, 13, false).await;
+
+        // 13 < 15: the loop steps through v14 (no-op) and v15 (adds the column).
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        assert_snippet_queries_succeed(&sm).await;
+    }
+
+    #[tokio::test]
+    async fn test_snippet_migration_heals_v14_collision_db() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        // The affected user's exact DB: stamped v14 by a send-personas build
+        // (has client_system_prompt_json) but missing last_message_snippet.
+        seed_pre_snippet_sessions_db(&db_path, 14, true).await;
+
+        // 14 < 15: the loop runs v15 and adds the column, unblocking the user.
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        assert_snippet_queries_succeed(&sm).await;
+    }
+
+    #[tokio::test]
+    async fn test_snippet_column_self_heals_when_version_gate_skips() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        // Simulates a future collision: another branch claims v15 for a
+        // different column, so a DB is stamped at our current version yet still
+        // lacks last_message_snippet. The migration loop is empty (15 < 15 is
+        // false) — only the unconditional self-healing guard can add the column.
+        seed_pre_snippet_sessions_db(&db_path, CURRENT_SCHEMA_VERSION, false).await;
+
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        assert_snippet_queries_succeed(&sm).await;
     }
 
     async fn snippet_session(sm: &SessionManager) -> String {
