@@ -865,7 +865,9 @@ fn strip_data_prefix(line: &str) -> Option<&str> {
 
 fn parse_streaming_chunk(line: &str) -> Result<StreamingChunk, ProviderError> {
     let value: Value = serde_json::from_str(line).map_err(|e| {
-        ProviderError::RequestFailed(format!("Failed to parse streaming chunk: {e}: {line:?}"))
+        ProviderError::stream_decode_error(format!(
+            "Failed to parse streaming chunk: {e}: {line:?}"
+        ))
     })?;
 
     if let Some(error) = value.get("error") {
@@ -885,7 +887,9 @@ fn parse_streaming_chunk(line: &str) -> Result<StreamingChunk, ProviderError> {
     }
 
     serde_json::from_value(value).map_err(|e| {
-        ProviderError::RequestFailed(format!("Failed to parse streaming chunk: {e}: {line:?}"))
+        ProviderError::stream_decode_error(format!(
+            "Failed to parse streaming chunk: {e}: {line:?}"
+        ))
     })
 }
 
