@@ -23,7 +23,7 @@ pub const CURRENT_SCHEMA_VERSION: i32 = 14;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
-const LAST_MESSAGE_SNIPPET_MAX_WORDS: usize = 10;
+const LAST_MESSAGE_SNIPPET_MAX_CHARS: usize = 128;
 
 #[derive(
     Debug,
@@ -598,17 +598,21 @@ pub(crate) fn role_to_string(role: &Role) -> &'static str {
 /// `Message::as_concat_text` yields only `Text` parts, so tool-request,
 /// tool-response, thinking, and image-only messages collapse to an empty
 /// string and return `None`. Internal whitespace and newlines are collapsed to
-/// single spaces, and the result is capped at `max_words` words (a trailing `…`
-/// marks truncation) so it can be rendered verbatim by clients.
-fn message_snippet(message: &Message, max_words: usize) -> Option<String> {
+/// single spaces, and the result is capped at `max_chars` characters (a
+/// trailing `…` marks truncation) so it can be rendered verbatim by clients.
+fn message_snippet(message: &Message, max_chars: usize) -> Option<String> {
     let text = message.as_concat_text();
-    let mut words = text.split_whitespace();
-    let snippet: Vec<&str> = words.by_ref().take(max_words).collect();
-    if snippet.is_empty() {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
         return None;
     }
-    let mut result = snippet.join(" ");
-    if words.next().is_some() {
+
+    let mut chars = normalized.chars();
+    let mut result: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        // trim a trailing space so we never produce "word …"
+        let end = result.trim_end().len();
+        result.truncate(end);
         result.push('…');
     }
     Some(result)
@@ -1569,7 +1573,7 @@ impl SessionStorage {
         .execute(&mut *tx)
         .await?;
 
-        match message_snippet(message, LAST_MESSAGE_SNIPPET_MAX_WORDS) {
+        match message_snippet(message, LAST_MESSAGE_SNIPPET_MAX_CHARS) {
             Some(snippet) => {
                 sqlx::query(
                     "UPDATE sessions SET updated_at = datetime('now'), last_message_snippet = ? WHERE id = ?",
@@ -1631,7 +1635,7 @@ impl SessionStorage {
             .messages()
             .iter()
             .rev()
-            .find_map(|message| message_snippet(message, LAST_MESSAGE_SNIPPET_MAX_WORDS));
+            .find_map(|message| message_snippet(message, LAST_MESSAGE_SNIPPET_MAX_CHARS));
 
         sqlx::query("UPDATE sessions SET last_message_snippet = ? WHERE id = ?")
             .bind(snippet)
@@ -3262,29 +3266,33 @@ mod tests {
 
         let collapsed = Message::user().with_text("  hello\n\nworld\t  again  ");
         assert_eq!(
-            message_snippet(&collapsed, 10).as_deref(),
+            message_snippet(&collapsed, 20).as_deref(),
             Some("hello world again")
         );
 
-        let long = Message::user()
-            .with_text("one two three four five six seven eight nine ten eleven twelve");
+        let exact = Message::user().with_text("one two three four x");
         assert_eq!(
-            message_snippet(&long, 10).as_deref(),
-            Some("one two three four five six seven eight nine ten…")
+            message_snippet(&exact, 20).as_deref(),
+            Some("one two three four x")
         );
 
-        let exact = Message::user().with_text("one two three four five six seven eight nine ten");
+        let long = Message::user().with_text("abcde fghij klmno p qrstuv");
         assert_eq!(
-            message_snippet(&exact, 10).as_deref(),
-            Some("one two three four five six seven eight nine ten")
+            message_snippet(&long, 20).as_deref(),
+            Some("abcde fghij klmno p…")
         );
+
+        let blob = Message::user().with_text("x".repeat(5000));
+        let s = message_snippet(&blob, 20).unwrap();
+        assert_eq!(s.chars().count(), 21);
+        assert!(s.ends_with('…'));
 
         let tool =
             Message::assistant().with_tool_request("t1", Ok(CallToolRequestParams::new("shell")));
-        assert_eq!(message_snippet(&tool, 10), None);
+        assert_eq!(message_snippet(&tool, 20), None);
 
         let thinking = Message::assistant().with_thinking("internal reasoning", "sig");
-        assert_eq!(message_snippet(&thinking, 10), None);
+        assert_eq!(message_snippet(&thinking, 20), None);
     }
 
     #[tokio::test]
