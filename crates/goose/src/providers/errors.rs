@@ -45,6 +45,10 @@ pub enum ProviderError {
 }
 
 impl ProviderError {
+    pub fn stream_decode_error(error: impl std::fmt::Display) -> Self {
+        ProviderError::NetworkError(format!("Stream decode error: {error}"))
+    }
+
     pub fn telemetry_type(&self) -> &'static str {
         match self {
             ProviderError::Authentication(_) => "auth",
