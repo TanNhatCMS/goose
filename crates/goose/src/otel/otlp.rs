@@ -145,11 +145,18 @@ pub fn promote_config_to_env(config: &crate::config::Config) {
 }
 
 fn create_resource() -> Resource {
+    let host = gethostname::gethostname().to_string_lossy().to_string();
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "unknown".to_string());
+
     let mut builder = Resource::builder_empty()
         .with_attributes([
             KeyValue::new("service.name", "goose"),
             KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
             KeyValue::new("service.namespace", "goose"),
+            KeyValue::new("host.name", host),
+            KeyValue::new("user.name", user),
         ])
         .with_detector(Box::new(EnvResourceDetector::new()))
         .with_detector(Box::new(TelemetryResourceDetector));
@@ -304,7 +311,12 @@ fn create_otlp_logs_layer() -> OtlpResult<OtlpLogsLayer> {
     };
 
     let bridge = OpenTelemetryTracingBridge::builder(&logger_provider)
-        .with_tracing_span_attributes(TracingSpanAttributes::allowlist(["session.id"]))
+        .with_tracing_span_attributes(TracingSpanAttributes::allowlist([
+            "session.id",
+            "session.user",
+            "session.host",
+            "session.agent_type",
+        ]))
         .build();
     *LOGGER_PROVIDER.lock().unwrap_or_else(|e| e.into_inner()) = Some(logger_provider);
 

@@ -1719,7 +1719,19 @@ impl Agent {
             .count();
 
         let working_dir = session.working_dir.clone();
-        let reply_stream_span = tracing::info_span!(target: "goose::agents::agent", "reply_stream", trace_output = tracing::field::Empty, session.id = %session_config.id);
+        let session_user = std::env::var("USER")
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_else(|_| "unknown".to_string());
+        let session_host = gethostname::gethostname().to_string_lossy().to_string();
+        let reply_stream_span = tracing::info_span!(
+            target: "goose::agents::agent",
+            "reply_stream",
+            trace_output = tracing::field::Empty,
+            session.id = %session_config.id,
+            session.user = %session_user,
+            session.host = %session_host,
+            session.agent_type = "goose",
+        );
         let inner = Box::pin(async_stream::try_stream! {
             let mut turns_taken = 0u32;
             let max_turns = session_config.max_turns.unwrap_or_else(|| {
