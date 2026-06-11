@@ -145,18 +145,15 @@ pub fn promote_config_to_env(config: &crate::config::Config) {
 }
 
 fn create_resource() -> Resource {
-    let host = gethostname::gethostname().to_string_lossy().to_string();
-    let user = std::env::var("USER")
-        .or_else(|_| std::env::var("LOGNAME"))
-        .unwrap_or_else(|_| "unknown".to_string());
+    use crate::session_context::{session_host, session_user};
 
     let mut builder = Resource::builder_empty()
         .with_attributes([
             KeyValue::new("service.name", "goose"),
             KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
             KeyValue::new("service.namespace", "goose"),
-            KeyValue::new("host.name", host),
-            KeyValue::new("user.name", user),
+            KeyValue::new("host.name", session_host()),
+            KeyValue::new("user.name", session_user()),
         ])
         .with_detector(Box::new(EnvResourceDetector::new()))
         .with_detector(Box::new(TelemetryResourceDetector));

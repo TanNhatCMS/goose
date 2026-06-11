@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use futures::stream::BoxStream;
@@ -64,20 +64,6 @@ use serde_json::Value;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
-
-fn cached_session_user() -> &'static str {
-    static USER: OnceLock<String> = OnceLock::new();
-    USER.get_or_init(|| {
-        std::env::var("USER")
-            .or_else(|_| std::env::var("LOGNAME"))
-            .unwrap_or_else(|_| "unknown".to_string())
-    })
-}
-
-fn cached_session_host() -> &'static str {
-    static HOST: OnceLock<String> = OnceLock::new();
-    HOST.get_or_init(|| gethostname::gethostname().to_string_lossy().to_string())
-}
 
 const DEFAULT_MAX_TURNS: u32 = 1000;
 const DEFAULT_STOP_HOOK_BLOCK_CAP: u32 = 8;
@@ -1738,8 +1724,8 @@ impl Agent {
             "reply_stream",
             trace_output = tracing::field::Empty,
             session.id = %session_config.id,
-            session.user = cached_session_user(),
-            session.host = cached_session_host(),
+            session.user = %crate::session_context::session_user(),
+            session.host = %crate::session_context::session_host(),
             session.agent_type = "goose",
         );
         let inner = Box::pin(async_stream::try_stream! {
