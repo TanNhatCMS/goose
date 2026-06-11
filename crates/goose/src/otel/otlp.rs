@@ -469,6 +469,7 @@ pub fn shutdown_otlp() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_context::{session_host, session_user};
     use goose_test_support::otel::clear_otel_env;
     use opentelemetry_sdk::metrics::Temporality;
     use test_case::test_case;
@@ -610,7 +611,7 @@ mod tests {
     #[test_case(
         &[],
         Resource::builder_empty()
-            .with_attributes([KeyValue::new("service.name", "goose"), KeyValue::new("service.version", env!("CARGO_PKG_VERSION")), KeyValue::new("service.namespace", "goose")])
+            .with_attributes([KeyValue::new("service.name", "goose"), KeyValue::new("service.version", env!("CARGO_PKG_VERSION")), KeyValue::new("service.namespace", "goose"), KeyValue::new("host.name", session_host()), KeyValue::new("user.name", session_user())])
             .with_detector(Box::new(TelemetryResourceDetector))
             .build();
         "no env vars uses goose defaults"
@@ -618,7 +619,7 @@ mod tests {
     #[test_case(
         &[("OTEL_SERVICE_NAME", "custom")],
         Resource::builder_empty()
-            .with_attributes([KeyValue::new("service.name", "goose"), KeyValue::new("service.version", env!("CARGO_PKG_VERSION")), KeyValue::new("service.namespace", "goose")])
+            .with_attributes([KeyValue::new("service.name", "goose"), KeyValue::new("service.version", env!("CARGO_PKG_VERSION")), KeyValue::new("service.namespace", "goose"), KeyValue::new("host.name", session_host()), KeyValue::new("user.name", session_user())])
             .with_detector(Box::new(TelemetryResourceDetector))
             .with_service_name("custom")
             .build();
@@ -627,7 +628,7 @@ mod tests {
     #[test_case(
         &[("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=prod")],
         Resource::builder_empty()
-            .with_attributes([KeyValue::new("service.name", "goose"), KeyValue::new("service.version", env!("CARGO_PKG_VERSION")), KeyValue::new("service.namespace", "goose")])
+            .with_attributes([KeyValue::new("service.name", "goose"), KeyValue::new("service.version", env!("CARGO_PKG_VERSION")), KeyValue::new("service.namespace", "goose"), KeyValue::new("host.name", session_host()), KeyValue::new("user.name", session_user())])
             .with_detector(Box::new(TelemetryResourceDetector))
             .with_attribute(KeyValue::new("deployment.environment", "prod"))
             .build();
@@ -636,7 +637,7 @@ mod tests {
     #[test_case(
         &[("OTEL_SERVICE_NAME", "custom"), ("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=prod")],
         Resource::builder_empty()
-            .with_attributes([KeyValue::new("service.name", "goose"), KeyValue::new("service.version", env!("CARGO_PKG_VERSION")), KeyValue::new("service.namespace", "goose")])
+            .with_attributes([KeyValue::new("service.name", "goose"), KeyValue::new("service.version", env!("CARGO_PKG_VERSION")), KeyValue::new("service.namespace", "goose"), KeyValue::new("host.name", session_host()), KeyValue::new("user.name", session_user())])
             .with_detector(Box::new(TelemetryResourceDetector))
             .with_service_name("custom")
             .with_attribute(KeyValue::new("deployment.environment", "prod"))
