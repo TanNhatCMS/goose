@@ -356,6 +356,7 @@ impl ToolInspector for EgressInspector {
                 tracing::info!(
                     security.event_type = "egress",
                     security.action = "LOG",
+                    security.threat_type = "data_exfiltration",
                     network.destination = dest.destination.as_str(),
                     network.domain = dest.domain.as_str(),
                     network.egress_kind = dest.kind.as_str(),

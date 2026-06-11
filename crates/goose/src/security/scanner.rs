@@ -171,10 +171,10 @@ impl PromptInjectionScanner {
 
         tracing::info!(
             security.event_type = "prompt_injection_scan",
-            security.confidence = %final_confidence,
-            security.threshold = %threshold,
+            security.confidence = final_confidence,
+            security.threshold = threshold,
             security.above_threshold = final_confidence >= threshold,
-            scanner.tool_confidence = %tool_result.confidence,
+            scanner.tool_confidence = tool_result.confidence,
             scanner.context_confidence = ?context_result.ml_confidence,
             scanner.used_command_ml = tool_result.ml_confidence.is_some(),
             scanner.used_prompt_ml = context_result.ml_confidence.is_some(),
