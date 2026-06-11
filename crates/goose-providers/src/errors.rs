@@ -42,6 +42,12 @@ pub enum ProviderError {
         details: String,
         top_up_url: Option<String>,
     },
+
+    #[error("Provider refused request: {details}")]
+    Refusal {
+        details: String,
+        category: Option<String>,
+    },
 }
 
 impl ProviderError {
@@ -62,11 +68,21 @@ impl ProviderError {
             ProviderError::NotImplemented(_) => "not_implemented",
             ProviderError::EndpointNotFound(_) => "endpoint_not_found",
             ProviderError::CreditsExhausted { .. } => "credits_exhausted",
+            ProviderError::Refusal { .. } => "refusal",
         }
     }
 
     pub fn is_endpoint_not_found(&self) -> bool {
         matches!(self, ProviderError::EndpointNotFound(_))
+    }
+
+    /// Recover a typed `ProviderError` from a streaming decode error, falling
+    /// back to a retryable stream decode error for errors that did not
+    /// originate as one.
+    pub fn from_stream_error(error: anyhow::Error) -> Self {
+        error
+            .downcast()
+            .unwrap_or_else(ProviderError::stream_decode_error)
     }
 }
 
