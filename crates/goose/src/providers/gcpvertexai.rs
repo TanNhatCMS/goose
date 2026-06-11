@@ -618,7 +618,10 @@ impl Provider for GcpVertexAIProvider {
             let mut message_stream = response_to_streaming_message(framed, &context_clone);
 
             while let Some(message) = message_stream.next().await {
-                let (message, usage) = message.map_err(ProviderError::stream_decode_error)?;
+                let (message, usage) = message.map_err(|e| {
+                    e.downcast::<ProviderError>()
+                        .unwrap_or_else(ProviderError::stream_decode_error)
+                })?;
                 log.write(&message, usage.as_ref().map(|u| &u.usage))?;
                 yield (message, usage);
             }
